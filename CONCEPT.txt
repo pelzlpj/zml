@@ -1,0 +1,49 @@
+
+ULTIMATE GOAL:
+
+   An IF authoring system which uses a Prolog dialect.  Something
+   comparable in scope to Inform 7, but with more powerful logical
+   constructs and without any attempt to express formal logic using
+   natural language.
+
+
+IMPLEMENTATION STRATEGY:
+
+   1) ZAPF, or an equivalent assembler, is used to create the "ZML
+      runtime": a set of function calls for allocating typed objects
+      from the heap, collecting garbage, etc.
+
+   2) OCaml is used to implement ZML.  ZML is a minimal ML dialect with
+      support for int, string, list, array, variant types, record types,
+      pattern matching, etc.  There will be no support for modules,
+      functors, etc., but it will be sufficient to write useful
+      programs.
+
+   3) ZLog, a prolog interpreter for the Z-Machine, is implemented in two
+      pieces.
+      
+      The ZLog front-end is implemented in OCaml; this will be the IF
+      authoring language.  The tool's compiled output shall be an AST
+      expressed in ZML.
+
+      The ZLog back-end is an interpreter for the AST which is
+      implemented in ZML.  A complete program is formed by compiling the
+      AST along with the interpreter.
+
+   4) A set of IF-targeted libraries are written for ZLog.  These would
+      include logic for recognizing nouns, verbs, direct objects, etc.
+      Ideally this part would be a community effort.
+
+
+POSSIBLE PITFALLS:
+
+   * Performance may suck.  There will be lots of pointer indirections
+     in order to work around the fact that the Z-Machine's stack is not
+     directly accessible.  Allocation and garbage collection may be
+     expensive.
+
+   * The Z-Machine has only 64KiB of RAM.  This may not be enough to
+     power a garbage-collected high-level language; it's hard to know
+     without trying.
+   
+

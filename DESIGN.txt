@@ -1,0 +1,100 @@
+
+ZML DESIGN NOTES
+----------------
+
+The Z-Machine kind of sucks for this sort of application.  So this may
+prove to be a challenge.
+
+A ZML runtime will be implemented in assembly.  This shall offer
+facilities for allocating type-tagged memory blocks off the heap.
+Allocation looks something like this:
+
+   1) Traverse the "free list" and find the first free chunk big enough
+      for our block.
+
+      If successful, remove that chunk from the free list, set up the
+      chunk with type tag information, and initialize its value.
+
+      A pointer to the new heap-allocated value is stored in a lookup
+      table at the end of RAM.  This lookup table is used by functions
+      which need to refer to the block; it gives us a way to relocate
+      blocks without modifying the stack, and it serves as a list of
+      roots for the GC.
+
+   2) If memory cannot be allocated, use a mark-and-sweep algorithm
+      to locate unused blocks.  A new free list is formed from the
+      unused blocks.
+
+   3) If memory still cannot be allocated, use a Haddon-Waite
+      table-based compaction algorithm to relocate live blocks to the
+      beginning of the heap.  The lookup table at the end of RAM also
+      has its pointers updated, so that any references on the stack
+      remain valid.
+
+      The Haddon-Waite approach is good from the perspective of
+      conserving memory; the minimum block size would be two words, and
+      there would be zero memory overhead during the compaction.
+
+Use of the ZML runtime requires the following discipline for stack
+usage:
+
+   A) When a function needs to (1) perform an operation which may
+      allocate memory and then (2) dereference a heap-allocated block,
+      then the heap-allocated block must be referred to via the block
+      lookup table.
+   
+   B) When a function allocates a block which it needs to refer to via
+      the block lookup table, then the function must explicitly free
+      the lookup table reference when it becomes unreachable (as the
+      function returns, if not before--unless the block is returned
+      to the caller, in which case a reference is live).
+
+In general, when calling a function using a heap-allocated block as an
+argument, it will be the lookup table pointer which is passed as the
+argument to 'call'.  An exception could be when static analysis
+indicates that both that function and all recursively-called functions
+do not allocate memory.
+
+Mark-and-Sweep:
+
+   1) For each pointer in the global roots table, recursively mark the
+      pointed-to block.  "Recursively mark" means marking the block
+      and all unmarked blocks it points to, in recursive fashion.
+
+   2) Traverse all memory blocks in the heap.  (The blocks are
+      structured such that we can iterate through them efficiently.)
+      If the block is marked, then clear the mark.  If the block is
+      unmarked, then clear the mark and add the block to the
+      (newly-created) free list.  Adjacent free list cells are
+      coalesced to assist in allocating larger blocks.
+
+Value Representation
+
+   * All blocks shall be aligned on a word boundary.  Thus the word
+     count of a memory block will fit in 15 bits.  This is useful for
+     the representation of a free list cons cell:
+
+                        ------------
+               Word 1:  |1|   N    |
+               Word 2:  | next_ptr |
+                ...     |  (free)  |
+               Word N:  |   ...    |
+                        ------------
+     
+     The '1' in Word 1 uniquely identifies a free list cell.  We have 15
+     bits available for N, which implies that the entirety of RAM can be
+     expressed as a single free region.
+
+   * Blocks containing values shall begin with a header word:
+
+                        ------------
+               Word 1:  |0|M|Tag|  |
+                        ------------
+
+     The first bit is 0, to indicate that this is a value and not a free
+     block.  The second bit is the Mark bit used by the mark/sweep
+     algorithm.  The Tag is a four or five bit value used to
+     differentiate all the supported block types.  The remaining bits
+     may contain type-specific data.
+
+
