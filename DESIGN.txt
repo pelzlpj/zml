@@ -70,9 +70,11 @@ Mark-and-Sweep:
 
 Value Representation
 
-   * All blocks shall be aligned on a word boundary.  Thus the word
-     count of a memory block will fit in 15 bits.  This is useful for
-     the representation of a free list cons cell:
+   * All blocks shall be aligned on a two-word boundary, and shall have a
+     two-word-aligned length.  This ensures that (1) every free area is
+     large enough to store two words and and (2) the word count of a
+     memory block will fit in 15 bits.  This permits the following
+     representation of a freelist cons cell:
 
                         ------------
                Word 1:  |1|   N    |

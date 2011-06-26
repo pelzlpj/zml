@@ -1,0 +1,68 @@
+#!/usr/bin/env python
+#
+# Unpacks a save game in Quetzal format, and dumps the RAM state to
+# stdout.
+#
+# Usage: decode_dyn story_file.z5 save_game.sav > output.bin
+#
+import sys
+import struct
+import itertools
+
+def unpack_concatenated_chunks(data):
+    result = []
+    while len(data) > 0:
+        (name, length) = struct.unpack(">4sI", data[:8])
+        result.append( (name, data[8:8+length]) )
+        pad_bytes = 0 if length % 2 == 0 else 1
+        data = data[8+length + pad_bytes:]
+    return result
+
+def unpack_form(data):
+    (sub_id,) = struct.unpack("4s", data[:4])
+    assert sub_id == 'IFZS'
+    return unpack_concatenated_chunks(data[4:])
+   
+def open_simple_iff(filename):
+    with open(filename, 'rb') as f:
+        iff_contents = f.read()
+    (name, length) = struct.unpack(">4sI", iff_contents[:8])
+    assert name == 'FORM'
+    return unpack_form(iff_contents[8:8+length])
+
+def expand_cmem(compressed):
+    i = 0
+    uncompressed = []
+    while i < len(compressed):
+        if compressed[i] != '\x00':
+            uncompressed.append(compressed[i])
+            i += 1
+        else:
+            uncompressed.append('\x00' * (1+ord(compressed[i+1])))
+            i += 2
+    return ''.join(uncompressed)
+
+def get_orig_dynamic(story_filename):
+    with open(story_filename) as f:
+        data = f.read(0xffff)
+    (dynamic_len,) = struct.unpack('>H', data[0xe:0xe + 2])
+    return data[:dynamic_len]
+
+def xor_char(c1, c2):
+    return chr(ord(c1) ^ ord(c2))
+
+def get_dynamic(story_filename, save_filename):
+    orig_dynamic = get_orig_dynamic(story_filename)
+    for (name, data) in open_simple_iff(save_filename):
+        if name == 'CMem':
+            differences = expand_cmem(data)
+            assert len(differences) <= len(orig_dynamic)
+            differences = differences + ('\x00' * (len(orig_dynamic) - len(differences)))
+            return ''.join(xor_char(c1, c2) for (c1, c2) in itertools.izip(orig_dynamic, differences))
+        elif name == 'UMem':
+            return data
+
+
+(story_filename, save_filename) = sys.argv[1:]
+sys.stdout.write(get_dynamic(story_filename, save_filename))
+

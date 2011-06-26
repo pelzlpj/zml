@@ -1,5 +1,7 @@
-; 32493 words of empty space
+; 32495 words of empty space
 
+.WORD 0
+.WORD 0
 .WORD 0
 .WORD 0
 .WORD 0
