@@ -119,7 +119,7 @@ Value Representation
      more space efficient.)
 
                         +-------------+
-               Word 1:  |0|M|        1|
+               Word 1:  |0|M|        2|
                Word 2:  |   N - 2     |
                Word 3:  | (value 0)   |
                Word 3:  | (value 1)   |
@@ -136,4 +136,23 @@ Value Representation
      block which contains pointers to other blocks.  The layout is otherwise
      identical to the value array cell.
 
+   * Tag 4 is used for a "value list cell", i.e. a heap-allocated block
+     which contains both a value and a pointer to another value list cell.
+     To satisfy alignment, a padding word is appended; its content is
+     undefined.
+
+                        +-------------+
+               Word 1:  |0|M|        4|
+               Word 2:  |  (value)    |
+               Word 3:  | (next ptr)  |
+               Word 4:  |   padding   |
+                        +-------------+
+     
+     A list cell need not point to another cell (end of list condition).
+     In this case, Word 3 shall have value 0xffff.
+
+   * Tag 5 is used for a "reference list cell", i.e. a heap-allocated
+     block which contains both a pointer to an arbitrary item and a
+     pointer to another value list cell.  The layout is otherwise identical
+     to the value list cell.
 

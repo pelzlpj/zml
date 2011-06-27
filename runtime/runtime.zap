@@ -18,12 +18,15 @@ FREELIST_SIZE_MASK=32767
 
 ; Zero is a valid freelist location, so we have to choose something different
 ; for NULL
-FREELIST_NULL=65535
+LIST_NULL=65535
 
 VALUEWORD_HEADER=0   ; Header word for a value word cell
 REFWORD_HEADER=1     ; Header word for a reference word cell
 VALUEARRAY_HEADER=2  ; Header word for a value array cell
 REFARRAY_HEADER=3    ; Header word for a reference array cell
+VALUELIST_HEADER=4   ; Header word for a value list cell
+REFLIST_HEADER=5     ; Header word for a reference list cell
+
 
 
 ; Insert zeros for the empty space until end of dynamic area
@@ -40,27 +43,35 @@ __zml_main::
 
 
 .FUNCT __main, ref1, ref2
-   call_vs zml_alloc_value_array 4 5 -> ref1
-   call_vs zml_array_size ref1 -> sp
-   print "Array size: "
+   call_vs zml_alloc_value_list 1 LIST_NULL -> ref1
+   call_vs zml_alloc_value_list 2 ref1 -> ref1
+   call_vs zml_alloc_value_list 300 ref1 -> ref2
+   call_vs zml_alloc_value_list 3 ref1 -> ref1
+   call_vs zml_alloc_value_list 400 ref2 -> ref2
+   print "List 1:"
+   new_line
+print_ref1_contents:
+   call_vs zml_list_head ref1 -> sp
    print_num sp
    new_line
-   call_vn zml_array_set ref1 0 1
-   call_vn zml_array_set ref1 1 2
-   call_vn zml_array_set ref1 2 3
-   call_vn zml_array_set ref1 3 4
-   call_vs zml_array_get ref1 1 -> sp
-   print "arr.(1) = "
+   call_vs zml_list_tail ref1 -> ref1
+   jeq ref1 LIST_NULL ?~print_ref1_contents
+   new_line
+   print "List 2:"
+   new_line
+print_ref2_contents:
+   call_vs zml_list_head ref2 -> sp
    print_num sp
    new_line
-   save -> sp
+   call_vs zml_list_tail ref2 -> ref2
+   jeq ref2 LIST_NULL ?~print_ref2_contents
    rtrue
    
 
 .FUNCT __zml_init_heap
    ; Initialize the heap with zero words allocated.  We end up with
    ; a freelist with one entry representing the entire heap.
-   call_vn __zml_freelist_node_cons 0 HEAP_WORDS FREELIST_NULL
+   call_vn __zml_freelist_node_cons 0 HEAP_WORDS LIST_NULL
    store 'freelist_head 0
    store 'freelist_end  0
    rtrue
@@ -206,6 +217,75 @@ done:
    rtrue
 
 
+.FUNCT zml_alloc_value_list, init_val, next_cell
+   ; Allocate a list cell, which shall contain the given initial
+   ; reference value and pointer to the next cell.  The cell contents shall
+   ; be treated as a pointer (not a value).
+   ;
+   ; param init_val: initial value to store in cell
+   ; param next_cell: pointer to next list cell, or LIST_NULL
+   ;
+   ; Returns: word index where cell begins (heap-relative)
+   call_vs __zml_alloc_list init_val next_cell VALUELIST_HEADER -> sp
+   ret_popped
+
+
+.FUNCT zml_alloc_ref_list, init_val, next_cell
+   ; Allocate a list cell, which shall contain the given initial value
+   ; and pointer to the next cell.  The cell contents shall be treated
+   ; as a value (not a pointer).
+   ;
+   ; param init_val: initial value to store in cell
+   ; param next_cell: pointer to next list cell, or LIST_NULL
+   ;
+   ; Returns: word index where cell begins (heap-relative)
+   call_vs __zml_alloc_list init_val next_cell REFLIST_HEADER -> sp
+   ret_popped
+
+
+.FUNCT __zml_alloc_list, init_val, next_cell, header_word, ref
+   ; Allocate a list cell, which shall contain the given initial value
+   ; and pointer to the next cell.  The list shall be created with the
+   ; specified header word.
+   ;
+   ; param init_val: initial value to place in cell
+   ; param next_cell: pointer to next cell, or LIST_NULL
+   ; param header_word: header value to place in cell
+   ; local ref: holds a reference to the allocated block
+   ;
+   ; Returns: word index where cell begins (heap-relative)
+   call_2s __zml_alloc_block 4 -> ref
+   storew __heap_start ref header_word
+   add ref 1 -> sp
+   storew __heap_start sp init_val
+   add ref 2 -> sp
+   storew __heap_start sp next_cell
+   ret ref
+
+
+.FUNCT zml_list_head, list
+   ; Retrieve the value stored in the given list cell.
+   ;
+   ; param list: word index where list cell begins (heap-relative)
+   ;
+   ; Returns: value
+   inc 'list
+   loadw __heap_start list -> sp
+   ret_popped
+
+
+.FUNCT zml_list_tail, list
+   ; Retrieve the location of the list cell which is pointed to
+   ; by the given cell.
+   ;
+   ; param list: word index where list cell begins (heap-relative)
+   ;
+   ; Returns: next list cell, or LIST_NULL if end-of-list
+   add list 2 -> sp
+   loadw __heap_start sp -> sp
+   ret_popped
+
+
 .FUNCT __zml_alloc_block, size_words, curr_node, prev_node, next_node, node_size
    ; Allocate a block of the given size, which shall be an even nonzero value.  If
    ; unsuccessful, the program is aborted with an "out of memory" message.
@@ -217,8 +297,8 @@ done:
    ; local node_size: stores size of a node
    ;
    ; Returns: word index where block begins (heap-relative)
-   jeq freelist_head FREELIST_NULL ?end_of_list             ; jump if zero memory available
-   store 'prev_node FREELIST_NULL
+   jeq freelist_head LIST_NULL ?end_of_list             ; jump if zero memory available
+   store 'prev_node LIST_NULL
    load 'freelist_head -> curr_node
    call_2s __zml_freelist_node_next curr_node -> next_node
    
@@ -239,7 +319,7 @@ alloc_entire_node:
 move_next_node:
    load 'curr_node -> prev_node
    load 'next_node -> curr_node
-   jeq curr_node FREELIST_NULL ?end_of_list                 ; jump if last node
+   jeq curr_node LIST_NULL ?end_of_list                 ; jump if last node
    call_2s __zml_freelist_node_next curr_node -> next_node  ; lookup next-node pointer
    jump try_alloc_node
 
@@ -252,9 +332,9 @@ end_of_list:
 .FUNCT __zml_freelist_node_remove, prev_node, next_node
    ; Remove a node from the freelist.
    ;
-   ; param prev_node: pointer to previous node in freelist, or FREELIST_NULL
-   ; param next_node: pointer to next node in freelist, or FREELIST_NULL
-   jeq prev_node FREELIST_NULL ?remove_freelist_head                 ; jump if this is first node in freelist
+   ; param prev_node: pointer to previous node in freelist, or LIST_NULL
+   ; param next_node: pointer to next node in freelist, or LIST_NULL
+   jeq prev_node LIST_NULL ?remove_freelist_head                 ; jump if this is first node in freelist
    call_vn __zml_freelist_node_set_next prev_node next_node          ; prev_node now linked to next_node
    rtrue
 
@@ -283,7 +363,7 @@ remove_freelist_head:
    ;
    ; param node: word pointer to node (even)
    ; param size_words: number of words in node (even)
-   ; param next: word pointer to next node (even), or FREELIST_NULL
+   ; param next: word pointer to next node (even), or LIST_NULL
    or size_words FREELIST_BIT -> sp
    storew __heap_start node sp
    inc 'node
