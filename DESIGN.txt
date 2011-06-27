@@ -109,3 +109,21 @@ Value Representation
                Word 2:  | (value)  |
                         +----------+
 
+   * Tag 1 is used for a "word array cell", i.e. a heap-allocated block
+     which contains a sequence of words which are not pointers.  (The
+     word-reference cell is equivalent to an array with one element.)
+
+                        +-------------+
+               Word 1:  |0|M|        1|
+               Word 2:  |   N - 2     |
+               Word 3:  | (value 0)   |
+               Word 3:  | (value 1)   |
+                ...     |   ...       |
+               Word N:  | (value N-1) |
+                        |   padding   |
+                        +-------------+
+
+     Word 2 carries the array size, which may be zero.  If the size of
+     the array is odd, then the array contents shall be followed by one
+     pad word with undefined content.
+

@@ -21,6 +21,7 @@ FREELIST_SIZE_MASK=32767
 FREELIST_NULL=65535
 
 WORDREF_HEADER=0     ; Header word for a word-reference cell
+WORDARRAY_HEADER=1   ; Header word for a word array
 
 
 ; Insert zeros for the empty space until end of dynamic area
@@ -37,20 +38,17 @@ __zml_main::
 
 
 .FUNCT __main, ref1, ref2
-   call_2s zml_alloc_wordref 16 -> ref1
-   print "Allocated word ref1: "
-   print_num ref1
+   call_vs zml_alloc_word_array 4 5 -> ref1
+   call_vs zml_word_array_get_size ref1 -> sp
+   print "Array size: "
+   print_num sp
    new_line
-   call_2s zml_alloc_wordref 32 -> ref2
-   print "Allocated word ref2: "
-   print_num ref2
-   new_line
-   call_2s zml_wordref_get ref1 -> sp
-   call_2s zml_wordref_get ref2 -> sp
-   add sp sp -> sp
-   call_vn zml_wordref_set ref2 sp
-   print "Added values: "
-   call_2s zml_wordref_get ref2 -> sp
+   call_vn zml_word_array_set ref1 0 1
+   call_vn zml_word_array_set ref1 1 2
+   call_vn zml_word_array_set ref1 2 3
+   call_vn zml_word_array_set ref1 3 4
+   call_vs zml_word_array_get ref1 1 -> sp
+   print "arr.(1) = "
    print_num sp
    new_line
    save -> sp
@@ -95,9 +93,74 @@ __zml_main::
    ; Set the value stored in a word reference cell.
    ;
    ; param ref: word index where reference cell begins (heap-relative)
-   ; param  val: new value to place in cell
+   ; param val: new value to place in cell
    inc 'ref
    storew __heap_start ref val
+   rtrue
+
+
+NOT_ONE=65534  ; bitwise not of 1
+
+.FUNCT zml_alloc_word_array, size, init_val, curr_word
+   ; Allocate a new array of the given size, assigning the initial value to all elements.
+   ;
+   ; param size: length of the array >= 0, in words
+   ; param init_val: initial value to store in all locations
+   ; local curr_word: current word being written
+   ;
+   ; Returns: word index where array begins (heap-relative)
+   add size 3 -> sp
+   and sp NOT_ONE -> sp                      ; even size ==> sp = size+2; odd size ==> sp = size+3
+   call_2s __zml_alloc_block sp -> sp        ; sp contains array ref
+   load 'sp -> curr_word
+   storew __heap_start curr_word WORDARRAY_HEADER
+   inc 'curr_word
+   storew __heap_start curr_word size
+
+fill_words:
+   jz size ?done                             ; jump if size is zero
+   inc 'curr_word
+   storew __heap_start curr_word init_val
+   dec 'size
+   jump fill_words
+
+done:
+   ret_popped
+
+
+.FUNCT zml_word_array_get_size, arr
+   ; Retrieve the size of the specified array.
+   ;
+   ; param arr: word index where array begins (heap-relative)
+   ;
+   ; Returns: array size
+   inc 'arr
+   loadw __heap_start arr -> sp
+   ret_popped
+
+
+.FUNCT zml_word_array_get, arr, index
+   ; Retrieve the value stored in the array at the given index.
+   ;
+   ; param arr: word index where array begins (heap-relative)
+   ; param index: array value to retrieve; 0 <= index < array size
+   ;
+   ; Returns: array value
+   add arr 2 -> sp
+   add sp index -> sp
+   loadw __heap_start sp -> sp
+   ret_popped
+
+
+.FUNCT zml_word_array_set, arr, index, val
+   ; Set the value stored in the array at the given index.
+   ;
+   ; param arr: word index where array begins (heap-relative)
+   ; param index: array value to set; 0 <= word < array size
+   ; param val: word to place in array
+   add arr 2 -> sp
+   add sp index -> sp
+   storew __heap_start sp val
    rtrue
 
 
