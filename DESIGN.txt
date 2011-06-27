@@ -99,7 +99,7 @@ Value Representation
      supported block types.  The remaining 9 bits are reserved for type-
      specific data.
 
-   * Tag 0 is used for an "word reference cell", i.e. a heap-allocated
+   * Tag 0 is used for an "value word cell", i.e. a heap-allocated
      block which contains a single-word value.  Note that the value will
      not be interpreted as a pointer.  The application may treat the
      value as an integer, packed string, etc.
@@ -109,9 +109,14 @@ Value Representation
                Word 2:  | (value)  |
                         +----------+
 
-   * Tag 1 is used for a "word array cell", i.e. a heap-allocated block
+   * Tag 1 is used for a "reference word cell", i.e. a heap-allocated
+     block which contains a pointer to another block.  The layout is
+     otherwise identical to the value word cell.
+
+   * Tag 2 is used for a "value array cell", i.e. a heap-allocated block
      which contains a sequence of words which are not pointers.  (The
-     word-reference cell is equivalent to an array with one element.)
+     value word cell is equivalent to an array with one element, but is
+     more space efficient.)
 
                         +-------------+
                Word 1:  |0|M|        1|
@@ -126,4 +131,9 @@ Value Representation
      Word 2 carries the array size, which may be zero.  If the size of
      the array is odd, then the array contents shall be followed by one
      pad word with undefined content.
+
+   * Tag 3 is used for a "reference array cell", i.e. a heap-allocated
+     block which contains pointers to other blocks.  The layout is otherwise
+     identical to the value array cell.
+
 
