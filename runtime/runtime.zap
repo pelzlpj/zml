@@ -20,12 +20,16 @@ FREELIST_SIZE_MASK=32767
 ; for NULL
 LIST_NULL=65535
 
-VALUEWORD_HEADER=0   ; Header word for a value word cell
-REFWORD_HEADER=1     ; Header word for a reference word cell
-VALUEARRAY_HEADER=2  ; Header word for a value array cell
-REFARRAY_HEADER=3    ; Header word for a reference array cell
-VALUELIST_HEADER=4   ; Header word for a value list cell
-REFLIST_HEADER=5     ; Header word for a reference list cell
+MARK_BIT=16384       ; Second-highest bit is the mark bit
+NOT_MARK_BIT=49151
+TAG_MASK=31          ; Low-order five bits hold the type tag
+
+VALUEWORD_TAG=0   ; Header word for a value word cell
+REFWORD_TAG=1     ; Header word for a reference word cell
+VALUEARRAY_TAG=2  ; Header word for a value array cell
+REFARRAY_TAG=3    ; Header word for a reference array cell
+VALUELIST_TAG=4   ; Header word for a value list cell
+REFLIST_TAG=5     ; Header word for a reference list cell
 
 
 
@@ -43,28 +47,13 @@ __zml_main::
 
 
 .FUNCT __main, ref1, ref2
-   call_vs zml_alloc_value_list 1 LIST_NULL -> ref1
-   call_vs zml_alloc_value_list 2 ref1 -> ref1
-   call_vs zml_alloc_value_list 300 ref1 -> ref2
-   call_vs zml_alloc_value_list 3 ref1 -> ref1
-   call_vs zml_alloc_value_list 400 ref2 -> ref2
-   print "List 1:"
-   new_line
-print_ref1_contents:
-   call_vs zml_list_head ref1 -> sp
-   print_num sp
-   new_line
-   call_vs zml_list_tail ref1 -> ref1
-   jeq ref1 LIST_NULL ?~print_ref1_contents
-   new_line
-   print "List 2:"
-   new_line
-print_ref2_contents:
-   call_vs zml_list_head ref2 -> sp
-   print_num sp
-   new_line
-   call_vs zml_list_tail ref2 -> ref2
-   jeq ref2 LIST_NULL ?~print_ref2_contents
+   call_vs zml_alloc_value_word 1 -> ref1
+   call_vs zml_alloc_ref_list ref1 LIST_NULL -> ref1
+   call_vs zml_alloc_value_word 2 -> ref2          ; should not be marked, because parent not marked
+   call_vs zml_alloc_ref_list ref2 ref1 -> ref2    ; should not be marked, has no parent
+   call_vs zml_alloc_ref_array 1 ref1 -> ref1
+   call_vn __zml_mark_recursive ref1 1
+   save -> sp
    rtrue
    
 
@@ -83,9 +72,9 @@ print_ref2_contents:
    ; param init_val: the initial value to be stored
    ; local ref: the location of the reference cell
    ;
-   ; Returns: word index where reference cell begins (heap-relative)
+   ; Returns: word index where value word cell begins (heap-relative)
    call_2s __zml_alloc_block 2 -> ref
-   storew __heap_start ref VALUEWORD_HEADER
+   storew __heap_start ref VALUEWORD_TAG
    add ref 1 -> sp
    storew __heap_start sp init_val
    ret ref
@@ -97,9 +86,9 @@ print_ref2_contents:
    ; param init_val: the initial value to be stored
    ; local ref: the location of the reference cell
    ;
-   ; Returns: word index where reference cell begins (heap-relative)
+   ; Returns: word index where reference word cell begins (heap-relative)
    call_2s __zml_alloc_block 2 -> ref
-   storew __heap_start ref REFWORD_HEADER
+   storew __heap_start ref REFWORD_TAG
    add ref 1 -> sp
    storew __heap_start sp init_val
    ret ref
@@ -108,7 +97,7 @@ print_ref2_contents:
 .FUNCT zml_word_get, ref
    ; Retrieve the value stored in a word reference cell.
    ;
-   ; param ref: word index where reference cell begins (heap-relative)
+   ; param ref: word index where word cell begins (heap-relative)
    ;
    ; Returns: value
    inc 'ref
@@ -119,10 +108,21 @@ print_ref2_contents:
 .FUNCT zml_word_set, ref, val
    ; Set the value stored in a word reference cell.
    ;
-   ; param ref: word index where reference cell begins (heap-relative)
+   ; param ref: word index where word cell begins (heap-relative)
    ; param val: new value to place in cell
    inc 'ref
    storew __heap_start ref val
+   rtrue
+
+
+.FUNCT __zml_word_mark_children, ref, is_set
+   ; Recursively set or clear the 'mark' bit on all children belonging to
+   ; this word cell.
+   ;
+   ; param ref: word index where word cell begins (heap-relative)
+   ; param is_set: 1 if mark should be set, 0 if cleared
+   inc 'ref
+   call_vn __zml_mark_recursive ref is_set
    rtrue
 
 
@@ -136,7 +136,7 @@ NOT_ONE=65534  ; bitwise not of 1
    ; param init_val: initial value to store in all locations
    ;
    ; Returns: word index where array begins (heap-relative)
-   call_vs __zml_alloc_array size init_val VALUEARRAY_HEADER -> sp
+   call_vs __zml_alloc_array size init_val VALUEARRAY_TAG -> sp
    ret_popped
 
 
@@ -148,7 +148,7 @@ NOT_ONE=65534  ; bitwise not of 1
    ; param init_val: initial value to store in all locations
    ;
    ; Returns: word index where array begins (heap-relative)
-   call_vs __zml_alloc_array size init_val REFARRAY_HEADER -> sp
+   call_vs __zml_alloc_array size init_val REFARRAY_TAG -> sp
    ret_popped
 
 
@@ -217,6 +217,27 @@ done:
    rtrue
 
 
+.FUNCT __zml_array_mark_children, ref, is_set, count
+   ; Recursively set or clear the 'mark' bit on all children belonging to
+   ; this array.
+   ;
+   ; param ref: word index where array cell begins (heap-relative)
+   ; param is_set: 1 if mark should be set, 0 if cleared
+   ; local count: loop counter
+   call_2s zml_array_size ref -> count
+
+   ; marking children in reverse order as we count down to 0
+mark_children:
+   jz count ?done                            ; jump if count reaches zero
+   dec 'count
+   call_vs zml_array_get ref count -> sp
+   call_vn __zml_mark_recursive sp is_set    ; mark child
+   jump mark_children
+
+done:
+   rtrue
+
+
 .FUNCT zml_alloc_value_list, init_val, next_cell
    ; Allocate a list cell, which shall contain the given initial
    ; reference value and pointer to the next cell.  The cell contents shall
@@ -226,7 +247,7 @@ done:
    ; param next_cell: pointer to next list cell, or LIST_NULL
    ;
    ; Returns: word index where cell begins (heap-relative)
-   call_vs __zml_alloc_list init_val next_cell VALUELIST_HEADER -> sp
+   call_vs __zml_alloc_list init_val next_cell VALUELIST_TAG -> sp
    ret_popped
 
 
@@ -239,7 +260,7 @@ done:
    ; param next_cell: pointer to next list cell, or LIST_NULL
    ;
    ; Returns: word index where cell begins (heap-relative)
-   call_vs __zml_alloc_list init_val next_cell REFLIST_HEADER -> sp
+   call_vs __zml_alloc_list init_val next_cell REFLIST_TAG -> sp
    ret_popped
 
 
@@ -283,6 +304,108 @@ done:
    ; Returns: next list cell, or LIST_NULL if end-of-list
    add list 2 -> sp
    loadw __heap_start sp -> sp
+   ret_popped
+
+
+.FUNCT __zml_value_list_mark_children, ref, is_set
+   ; Recursively set or clear the 'mark' bit on the chain of list cells to
+   ; which this cell links.  The value contained in this list cell is
+   ; *not* marked.
+   ;
+   ; param ref: word index where list cell begins (heap-relative)
+   ; param is_set: 1 if mark should be set, 0 if cleared
+   call_2s zml_list_tail ref -> ref
+   jeq ref LIST_NULL ?end_of_list
+   call_vn __zml_mark_recursive ref is_set
+end_of_list:
+   rtrue
+
+
+.FUNCT __zml_ref_list_mark_children, ref, is_set
+   ; Recursively set or clear the 'mark' bit on all children belonging to
+   ; this list cell, and on the chain of list cells to which this cell
+   ; links.
+   ;
+   ; param ref: word index where list cell begins (heap-relative)
+   ; param is_set: 1 if mark should be set, 0 if cleared
+   call_2s zml_list_head ref -> sp
+   call_vn __zml_mark_recursive sp is_set
+   call_vn __zml_value_list_mark_children ref is_set
+   rtrue
+
+
+.FUNCT __zml_mark_recursive, ref, is_set, tag
+   ; Check whether the 'mark' bit on this block is set or clear.  If it
+   ; differs from the requested setting, then toggle the state and recursively
+   ; apply the setting to all child blocks.
+   ;
+   ; param ref: word index where block begins (heap-relative)
+   ; param is_set: 1 if mark should be set, 0 if cleared
+   ; local tag: stores value of block tag
+   call_vs __zml_mark ref is_set -> sp
+   jz sp ?already_marked                  ; jump if already marked
+   call_2s __zml_tag_get ref -> tag       ; dispatch based on tag value
+   jeq tag REFWORD_TAG     ?ref_word
+   jeq tag REFARRAY_TAG    ?ref_array
+   jeq tag VALUELIST_TAG   ?value_list
+   jeq tag REFLIST_TAG     ?ref_list
+   rtrue                                  ; default case: no pointers to children
+
+already_marked:
+   rtrue
+
+ref_word:
+   call_vn __zml_word_mark_children ref is_set
+   rtrue
+
+ref_array:
+   call_vn __zml_array_mark_children ref is_set
+   rtrue
+
+value_list:
+   call_vn __zml_value_list_mark_children ref is_set
+   rtrue
+
+ref_list:
+   call_vn __zml_ref_list_mark_children ref is_set
+   rtrue
+
+
+.FUNCT __zml_mark, ref, is_set, header
+   ; Set or clear the 'mark' bit on this block.
+   ;
+   ; param ref: word index where block begins (heap-relative)
+   ; param is_set: 1 if mark should be set, 0 if cleared
+   ; local header: old value of header
+   ;
+   ; Returns: true if the bit needed to be changed, false otherwise
+   loadw __heap_start ref -> header 
+   and header MARK_BIT -> sp
+   jz is_set ?clear                       ; jump if clear is requested
+
+   jz sp ?~no_change                      ; jump if mark bit was already set
+   or header MARK_BIT -> sp               ; otherwise set it
+   storew __heap_start ref sp
+   rtrue
+
+clear:
+   jz sp ?no_change                       ; jump if mark bit was already clear
+   and header NOT_MARK_BIT -> sp          ; otherwise clear it
+   storew __heap_start ref sp
+   rtrue
+
+no_change:
+   rfalse
+
+
+.FUNCT __zml_tag_get, ref
+   ; Retrieve the value of the tag for the given block.
+   ;
+   ; param ref: word index of start of the block (heap-relative)
+   ;
+   ; Returns: tag value
+   loadw __heap_start ref -> sp
+   and sp TAG_MASK -> sp
    ret_popped
 
 

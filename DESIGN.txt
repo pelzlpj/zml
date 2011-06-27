@@ -134,7 +134,8 @@ Value Representation
 
    * Tag 3 is used for a "reference array cell", i.e. a heap-allocated
      block which contains pointers to other blocks.  The layout is otherwise
-     identical to the value array cell.
+     identical to the value array cell.  (Note that the reference array
+     cell also serves as storage for ML record types.)
 
    * Tag 4 is used for a "value list cell", i.e. a heap-allocated block
      which contains both a value and a pointer to another value list cell.
@@ -150,6 +151,10 @@ Value Representation
      
      A list cell need not point to another cell (end of list condition).
      In this case, Word 3 shall have value 0xffff.
+
+     Note: with some care, it might be possible to fit a list cell in two
+     words.  The "next cell" pointer can be represented in 14 bits at
+     most...
 
    * Tag 5 is used for a "reference list cell", i.e. a heap-allocated
      block which contains both a pointer to an arbitrary item and a
