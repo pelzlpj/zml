@@ -72,16 +72,16 @@ Value Representation
 
    * All blocks shall be aligned on a two-word boundary, and shall have a
      two-word-aligned length.  This ensures that (1) every free area is
-     large enough to store two words and and (2) the word count of a
+     large enough to store two words and (2) the word count of a
      memory block will fit in 15 bits.  This permits the following
      representation of a freelist cons cell:
 
-                        ------------
+                        +----------+
                Word 1:  |1|   N    |
                Word 2:  | next_ptr |
                 ...     |  (free)  |
                Word N:  |   ...    |
-                        ------------
+                        +----------+
      
      The '1' in Word 1 uniquely identifies a free list cell.  We have 15
      bits available for N, which implies that the entirety of RAM can be
@@ -90,13 +90,22 @@ Value Representation
    * Blocks containing values shall begin with a header word:
 
                         ------------
-               Word 1:  |0|M|Tag|  |
+               Word 1:  |0|M|  |Tag|
                         ------------
 
      The first bit is 0, to indicate that this is a value and not a free
      block.  The second bit is the Mark bit used by the mark/sweep
-     algorithm.  The Tag is a four or five bit value used to
-     differentiate all the supported block types.  The remaining bits
-     may contain type-specific data.
+     algorithm.  The Tag is a five bit value used to differentiate all the
+     supported block types.  The remaining 9 bits are reserved for type-
+     specific data.
 
+   * Tag 0 is used for an "word reference cell", i.e. a heap-allocated
+     block which contains a single-word value.  Note that the value will
+     not be interpreted as a pointer.  The application may treat the
+     value as an integer, packed string, etc.
+
+                        +----------+
+               Word 1:  |0|M|     0|
+               Word 2:  | (value)  |
+                        +----------+
 

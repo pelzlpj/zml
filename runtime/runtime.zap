@@ -13,11 +13,15 @@
 HEAP_WORDS=32495
 
 ; We set the high bit to indicate a memory block which is a freelist cons cell
-FREELIST_HEADER=HEAP_WORDS+32768
-
 FREELIST_BIT=32768
 FREELIST_SIZE_MASK=32767
+
+; Zero is a valid freelist location, so we have to choose something different
+; for NULL
 FREELIST_NULL=65535
+
+WORDREF_HEADER=0     ; Header word for a word-reference cell
+
 
 ; Insert zeros for the empty space until end of dynamic area
 __heap_start::
@@ -28,32 +32,30 @@ __begin_high::
 
 __zml_main::
    call_1n __zml_init_heap
-
-   ; fragment the free list a bit
-   call_vn __zml_freelist_node_divide 0 10
-
-   call_2s zml_alloc_block 12 -> sp
-   print "allocated block at: "
-   print_num sp
-   new_line
-
-   call_2s zml_alloc_block 12 -> sp
-   print "allocated block at: "
-   print_num sp
-   new_line
-
-   call_2s zml_alloc_block 10 -> sp
-   print "allocated block at: "
-   print_num sp
-   new_line
-
-   call_2s zml_alloc_block 10 -> sp
-   print "allocated block at: "
-   print_num sp
-   new_line
-
-   save -> sp
+   call_1n __main
    quit
+
+
+.FUNCT __main, ref1, ref2
+   call_2s zml_alloc_wordref 16 -> ref1
+   print "Allocated word ref1: "
+   print_num ref1
+   new_line
+   call_2s zml_alloc_wordref 32 -> ref2
+   print "Allocated word ref2: "
+   print_num ref2
+   new_line
+   call_2s zml_wordref_get ref1 -> sp
+   call_2s zml_wordref_get ref2 -> sp
+   add sp sp -> sp
+   call_vn zml_wordref_set ref2 sp
+   print "Added values: "
+   call_2s zml_wordref_get ref2 -> sp
+   print_num sp
+   new_line
+   save -> sp
+   rtrue
+   
 
 .FUNCT __zml_init_heap
    ; Initialize the heap with zero words allocated.  We end up with
@@ -64,7 +66,42 @@ __zml_main::
    rtrue
 
 
-.FUNCT zml_alloc_block, size_words, curr_node, prev_node, next_node, node_size
+.FUNCT zml_alloc_wordref, init_val, ref
+   ; Allocate a reference cell which stores a single word.
+   ; 
+   ; param init_val: the initial value to be stored
+   ; local ref: the location of the reference cell
+   ;
+   ; Returns: word index where reference cell begins (heap-relative)
+   call_2s __zml_alloc_block 2 -> ref
+   storew __heap_start ref WORDREF_HEADER
+   add ref 1 -> sp
+   storew __heap_start sp init_val
+   ret ref
+
+
+.FUNCT zml_wordref_get, ref
+   ; Retrieve the value stored in a word reference cell.
+   ;
+   ; param ref: word index where reference cell begins (heap-relative)
+   ;
+   ; Returns: value
+   inc 'ref
+   loadw __heap_start ref -> sp
+   ret_popped
+
+
+.FUNCT zml_wordref_set, ref, val
+   ; Set the value stored in a word reference cell.
+   ;
+   ; param ref: word index where reference cell begins (heap-relative)
+   ; param  val: new value to place in cell
+   inc 'ref
+   storew __heap_start ref val
+   rtrue
+
+
+.FUNCT __zml_alloc_block, size_words, curr_node, prev_node, next_node, node_size
    ; Allocate a block of the given size, which shall be an even nonzero value.  If
    ; unsuccessful, the program is aborted with an "out of memory" message.
    ;
