@@ -144,7 +144,7 @@ Value Representation
 
                         +-------------+
                Word 1:  |0|M|        4|
-               Word 2:  |  (value)    |
+               Word 2:  |   (value)   |
                Word 3:  | (next ptr)  |
                Word 4:  |   padding   |
                         +-------------+

@@ -48,11 +48,13 @@ __zml_main::
 
 .FUNCT __main, ref1, ref2
    call_vs zml_alloc_value_word 1 -> ref1
-   call_vs zml_alloc_ref_list ref1 LIST_NULL -> ref1
    call_vs zml_alloc_value_word 2 -> ref2          ; should not be marked, because parent not marked
+   call_vs zml_alloc_ref_list ref1 LIST_NULL -> ref1
    call_vs zml_alloc_ref_list ref2 ref1 -> ref2    ; should not be marked, has no parent
    call_vs zml_alloc_ref_array 1 ref1 -> ref1
    call_vn __zml_mark_recursive ref1 1
+   save -> sp
+   call_1n __zml_sweep
    save -> sp
    rtrue
    
@@ -126,8 +128,6 @@ __zml_main::
    rtrue
 
 
-NOT_ONE=65534  ; bitwise not of 1
-
 .FUNCT zml_alloc_value_array, size, init_val
    ; Allocate a new array of the given size, which shall hold values (not pointers).
    ; The initial value is assigned to all elements.
@@ -152,8 +152,10 @@ NOT_ONE=65534  ; bitwise not of 1
    ret_popped
 
 
+NOT_ONE=65534  ; bitwise not of 1
+
 .FUNCT __zml_alloc_array, size, init_val, header_word, curr_word
-   ; Allocate a new array of the given size, applying the specified ; array header
+   ; Allocate a new array of the given size, applying the specified array header
    ; to the reference cell. The initial value is assigned to all elements.
    ;
    ; param size: length of the array >= 0, in words
@@ -236,6 +238,18 @@ mark_children:
 
 done:
    rtrue
+
+
+.FUNCT __zml_array_storage_size, ref
+   ; Gets the storage size reserved for this array, in words.
+   ;
+   ; param ref: word index where array begins (heap-relative)
+   ;
+   ; Returns: storage size
+   call_2s zml_array_size ref -> sp
+   add sp 3 -> sp
+   and sp NOT_ONE -> sp   ; even size ==> sp = size+2; odd size ==> sp = size+3
+   ret_popped
 
 
 .FUNCT zml_alloc_value_list, init_val, next_cell
@@ -398,6 +412,108 @@ no_change:
    rfalse
 
 
+.FUNCT __zml_allocated_block_size, ref, tag
+   ; Determines the number of words in an allocated memory block.
+   ;
+   ; param ref: word index where block begins (heap-relative)
+   ; local tag: storage for the block tag
+   call_2s __zml_tag_get ref -> tag       ; dispatch based on tag value
+   jeq tag VALUEWORD_TAG   ?tag_word
+   jeq tag REFWORD_TAG     ?tag_word
+   jeq tag VALUEARRAY_TAG  ?tag_array
+   jeq tag REFARRAY_TAG    ?tag_array
+   jeq tag VALUELIST_TAG   ?tag_list
+   jeq tag REFLIST_TAG     ?tag_list
+
+tag_word:
+   push 2
+   ret_popped
+
+tag_array:
+   call_2s __zml_array_storage_size ref -> sp
+   ret_popped
+
+tag_list:
+   push 4
+   ret_popped
+
+
+.FUNCT __zml_sweep, block, freelist_last, header, size
+   ; Sweeps the marked heap.  Unmarked blocks are assigned to a newly-created
+   ; freelist.  Marked blocks become unmarked.
+   ;
+   ; Note that the freelist is created in strictly increasing address order.
+   ;
+   ; local block: word index of current block
+   ; local freelist_last: most recently created freelist node, at the end of the
+   ;     list
+   ; local header: storage for a header word
+   ; local size: size of current block
+   store 'freelist_head LIST_NULL
+   store 'block 0
+   store 'freelist_last LIST_NULL
+
+traverse_next:
+   print "visit "
+   print_num block
+   new_line
+   jeq block freelist_end ?end_traversal                             ; jump if entire heap was examined
+   loadw __heap_start block -> header
+   and header FREELIST_BIT -> sp
+   jz sp ?block_was_allocated                                        ; jump if this block was allocated memory
+
+block_was_free:
+   call_2s __zml_freelist_node_size block -> size
+
+block_is_free:
+   jeq freelist_last LIST_NULL ?block_is_first_free                  ; jump if this is the first free block
+   call_2s __zml_freelist_node_next freelist_last -> sp              ; sp contains block following last freelist entry
+   jeq sp block ?coalesce_free_blocks                                ; jump if this free block is adjacent to previous
+   call_2s __zml_freelist_node_size freelist_last -> sp              ; sp contains size of last freelist entry
+   call_vn __zml_freelist_node_cons freelist_last sp block           ; make freelist_last point to current block
+   add block size -> sp                                              ; sp contains location immediately following current block
+   call_vn __zml_freelist_node_cons block size sp                    ; current block now points to block immediately following
+   store 'freelist_last block                                        ; current block is now last in the freelist
+   add block size -> block
+   jump traverse_next                                                ; process block immediately after current
+   
+coalesce_free_blocks:
+   add block size -> sp                                              ; sp contains location immediately following current block
+   call_2s __zml_freelist_node_size freelist_last -> sp
+   add size sp -> sp                                                 ; sp contains size of coalesced block
+   call_vn __zml_freelist_node_cons freelist_last sp sp              ; freelist_last is extended in-place
+   add block size -> block
+   jump traverse_next                                                ; process block immediately after current
+
+block_is_first_free:
+   store 'freelist_head block
+   store 'freelist_last block
+   add block size -> sp                                              ; sp points to next block
+   call_vn __zml_freelist_node_cons block size sp
+   add block size -> block
+   jump traverse_next                                                ; process block immediately after current
+
+block_was_allocated:
+   call_2s __zml_allocated_block_size block -> size
+   call_vs __zml_mark block 0 -> sp                                  ; unmark block; sp == 1 iff block was marked
+   jz sp ?block_is_free                                              ; jump if this allocated block is unreachable
+
+reachable_allocated_block:
+   ; nothing to do
+   add block size -> block
+   jump traverse_next                                                ; process block immediately after current
+
+end_traversal:
+   jeq freelist_last LIST_NULL ?no_new_freelist                      ; jump if no freelist entries created
+   call_2s __zml_freelist_node_size freelist_last -> sp
+   call_vn __zml_freelist_node_cons freelist_last sp freelist_end    ; append freelist_end to the freelist
+   rtrue
+
+no_new_freelist:
+   store 'freelist_head freelist_end
+   rtrue
+
+
 .FUNCT __zml_tag_get, ref
    ; Retrieve the value of the tag for the given block.
    ;
@@ -436,13 +552,14 @@ try_alloc_node:
    call_2s __zml_freelist_node_next curr_node -> next_node  ; update next_node to reflect change
 
 alloc_entire_node:
+   jeq curr_node freelist_end ?end_of_list                  ; jump if this would eliminate the last freelist node
    call_vn __zml_freelist_node_remove prev_node next_node   ; drop curr_node from freelist
    ret curr_node
 
 move_next_node:
    load 'curr_node -> prev_node
    load 'next_node -> curr_node
-   jeq curr_node LIST_NULL ?end_of_list                 ; jump if last node
+   jeq curr_node LIST_NULL ?end_of_list                     ; jump if last node
    call_2s __zml_freelist_node_next curr_node -> next_node  ; lookup next-node pointer
    jump try_alloc_node
 
@@ -458,7 +575,7 @@ end_of_list:
    ; param prev_node: pointer to previous node in freelist, or LIST_NULL
    ; param next_node: pointer to next node in freelist, or LIST_NULL
    jeq prev_node LIST_NULL ?remove_freelist_head                 ; jump if this is first node in freelist
-   call_vn __zml_freelist_node_set_next prev_node next_node          ; prev_node now linked to next_node
+   call_vn __zml_freelist_node_set_next prev_node next_node      ; prev_node now linked to next_node
    rtrue
 
 remove_freelist_head:
@@ -478,6 +595,11 @@ remove_freelist_head:
    sub sp size_words -> sp                                     ; push size of new node
    call_vn __zml_freelist_node_cons new_node sp sp             ; create new node linked to next_node
    call_vn __zml_freelist_node_cons node size_words new_node   ; link old node to new one
+   jeq node freelist_end ?update_freelist_end                  ; jump if divided node was end-of-list
+   rtrue
+
+update_freelist_end:
+   store 'freelist_end new_node
    rtrue
 
 
