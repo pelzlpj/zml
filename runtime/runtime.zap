@@ -20,16 +20,18 @@ FREELIST_SIZE_MASK=32767
 ; for NULL
 LIST_NULL=65535
 
-MARK_BIT=16384       ; Second-highest bit is the mark bit
-NOT_MARK_BIT=49151
-TAG_MASK=31          ; Low-order five bits hold the type tag
 
-VALUEWORD_TAG=0   ; Header word for a value word cell
-REFWORD_TAG=1     ; Header word for a reference word cell
-VALUEARRAY_TAG=2  ; Header word for a value array cell
-REFARRAY_TAG=3    ; Header word for a reference array cell
-VALUELIST_TAG=4   ; Header word for a value list cell
-REFLIST_TAG=5     ; Header word for a reference list cell
+MARK_BIT=16384          ; Second-highest bit is the mark bit
+NOT_MARK_BIT=49151
+TAG_MASK=15360          ; Four bits for the tag
+HEADER_DATA_MASK=1023   ; Bottom ten bits hold type-specific data
+
+
+; The following are pre-shifted by 10 bits for ease of comparison
+VALUEARRAY_TAG=0     ; Header word for a value array cell
+REFARRAY_TAG=1024    ; Header word for a reference array cell
+VALUELIST_TAG=2048   ; Header word for a value list cell
+REFLIST_TAG=3072     ; Header word for a reference list cell
 
 
 
@@ -47,14 +49,32 @@ __zml_main::
 
 
 .FUNCT __main, ref1, ref2
-   call_vs zml_alloc_value_word 1 -> ref1
-   call_vs zml_alloc_value_word 2 -> ref2          ; should not be marked, because parent not marked
-   call_vs zml_alloc_ref_list ref1 LIST_NULL -> ref1
-   call_vs zml_alloc_ref_list ref2 ref1 -> ref2    ; should not be marked, has no parent
-   call_vs zml_alloc_ref_array 1 ref1 -> ref1
-   call_vn __zml_mark_recursive ref1 1
-   save -> sp
-   call_1n __zml_sweep
+   call_vs zml_alloc_value_array 0 15 -> ref1
+   call_vs zml_array_size ref1 -> sp
+
+   call_vs zml_alloc_value_array 1 31 -> ref1
+   call_vn zml_array_set ref1 0 15
+   call_vs zml_array_get ref1 0 -> sp
+   print_num sp
+   new_line
+
+   call_vs zml_alloc_value_array 1023 15 -> ref1
+   call_vs zml_array_size ref1 -> sp
+   call_vn zml_array_set ref1 0 14
+   call_vs zml_array_get ref1 0 -> sp
+   print_num sp
+   new_line
+
+   call_vs zml_alloc_value_array 1024 15 -> ref1
+   call_vs zml_array_size ref1 -> sp
+   print_num sp
+   new_line
+
+   call_vs zml_alloc_value_array 1025 15 -> ref1
+   call_vs zml_array_size ref1 -> sp
+   print_num sp
+   new_line
+
    save -> sp
    rtrue
    
@@ -65,66 +85,6 @@ __zml_main::
    call_vn __zml_freelist_node_cons 0 HEAP_WORDS LIST_NULL
    store 'freelist_head 0
    store 'freelist_end  0
-   rtrue
-
-
-.FUNCT zml_alloc_value_word, init_val, ref
-   ; Allocate a word cell which stores a single word by value.
-   ; 
-   ; param init_val: the initial value to be stored
-   ; local ref: the location of the reference cell
-   ;
-   ; Returns: word index where value word cell begins (heap-relative)
-   call_2s __zml_alloc_block 2 -> ref
-   storew __heap_start ref VALUEWORD_TAG
-   add ref 1 -> sp
-   storew __heap_start sp init_val
-   ret ref
-
-
-.FUNCT zml_alloc_ref_word, init_val, ref
-   ; Allocate a word cell which stores a single reference (pointer).
-   ; 
-   ; param init_val: the initial value to be stored
-   ; local ref: the location of the reference cell
-   ;
-   ; Returns: word index where reference word cell begins (heap-relative)
-   call_2s __zml_alloc_block 2 -> ref
-   storew __heap_start ref REFWORD_TAG
-   add ref 1 -> sp
-   storew __heap_start sp init_val
-   ret ref
-
-
-.FUNCT zml_word_get, ref
-   ; Retrieve the value stored in a word reference cell.
-   ;
-   ; param ref: word index where word cell begins (heap-relative)
-   ;
-   ; Returns: value
-   inc 'ref
-   loadw __heap_start ref -> sp
-   ret_popped
-
-
-.FUNCT zml_word_set, ref, val
-   ; Set the value stored in a word reference cell.
-   ;
-   ; param ref: word index where word cell begins (heap-relative)
-   ; param val: new value to place in cell
-   inc 'ref
-   storew __heap_start ref val
-   rtrue
-
-
-.FUNCT __zml_word_mark_children, ref, is_set
-   ; Recursively set or clear the 'mark' bit on all children belonging to
-   ; this word cell.
-   ;
-   ; param ref: word index where word cell begins (heap-relative)
-   ; param is_set: 1 if mark should be set, 0 if cleared
-   inc 'ref
-   call_vn __zml_mark_recursive ref is_set
    rtrue
 
 
@@ -152,7 +112,7 @@ __zml_main::
    ret_popped
 
 
-NOT_ONE=65534  ; bitwise not of 1
+NOT_ONE=65534           ; bitwise not of 1
 
 .FUNCT __zml_alloc_array, size, init_val, header_word, curr_word
    ; Allocate a new array of the given size, applying the specified array header
@@ -164,16 +124,29 @@ NOT_ONE=65534  ; bitwise not of 1
    ; local curr_word: current word being written
    ;
    ; Returns: word index where array begins (heap-relative)
+   jl size HEADER_DATA_MASK ?small_array           ; jump if size is small enough for compact representation
+
+large_array:
    add size 3 -> sp
-   and sp NOT_ONE -> sp                      ; even size ==> sp = size+2; odd size ==> sp = size+3
-   call_2s __zml_alloc_block sp -> sp        ; sp contains array ref
-   load 'sp -> curr_word
+   and sp NOT_ONE -> sp                            ; even size ==> sp = size+2; odd size ==> sp = size+3
+   call_2s __zml_alloc_block sp -> curr_word
+   push curr_word                                  ; leave a copy of array reference on the stack
+   or header_word HEADER_DATA_MASK -> header_word  ; header now identifies this as large array
    storew __heap_start curr_word header_word
    inc 'curr_word
    storew __heap_start curr_word size
+   jump fill_words
+
+small_array:
+   add size 2 -> sp
+   and sp NOT_ONE -> sp                            ; even size ==> sp = size+2; odd size ==> sp = size+1
+   call_2s __zml_alloc_block sp -> curr_word
+   push curr_word                                  ; leave a copy of array reference on the stack
+   or header_word size -> header_word
+   storew __heap_start curr_word header_word
 
 fill_words:
-   jz size ?done                             ; jump if size is zero
+   jz size ?done                                   ; jump if size is zero
    inc 'curr_word
    storew __heap_start curr_word init_val
    dec 'size
@@ -183,15 +156,22 @@ done:
    ret_popped
 
 
-.FUNCT zml_array_size, arr
+.FUNCT zml_array_size, arr, header_size
    ; Retrieve the size of the specified array.
    ;
    ; param arr: word index where array begins (heap-relative)
+   ; local header_size: size of array recorded in the array header
    ;
    ; Returns: array size
+   loadw __heap_start arr -> sp
+   and sp HEADER_DATA_MASK -> header_size
+   jl header_size HEADER_DATA_MASK ?small_array   ; jump if this is array uses compact representation
    inc 'arr
    loadw __heap_start arr -> sp
    ret_popped
+
+small_array:
+   ret header_size
 
 
 .FUNCT zml_array_get, arr, index
@@ -201,11 +181,20 @@ done:
    ; param index: array value to retrieve; 0 <= index < array size
    ;
    ; Returns: array value
+   loadw __heap_start arr -> sp
+   and sp HEADER_DATA_MASK -> sp
+   jl sp HEADER_DATA_MASK ?small_array             ; jump if this array uses compact representation
    add arr 2 -> sp
    add sp index -> sp
    loadw __heap_start sp -> sp
    ret_popped
 
+small_array:
+   add arr 1 -> sp
+   add sp index -> sp
+   loadw __heap_start sp -> sp
+   ret_popped
+   
 
 .FUNCT zml_array_set, arr, index, val
    ; Set the value stored in the array at the given index.
@@ -213,7 +202,16 @@ done:
    ; param arr: word index where array begins (heap-relative)
    ; param index: array value to set; 0 <= word < array size
    ; param val: word to place in array
+   loadw __heap_start arr -> sp
+   and sp HEADER_DATA_MASK -> sp
+   jl sp HEADER_DATA_MASK ?small_array             ; jump if this array uses compact representation
    add arr 2 -> sp
+   add sp index -> sp
+   storew __heap_start sp val
+   rtrue
+
+small_array:
+   add arr 1 -> sp
    add sp index -> sp
    storew __heap_start sp val
    rtrue
@@ -246,9 +244,18 @@ done:
    ; param ref: word index where array begins (heap-relative)
    ;
    ; Returns: storage size
+   loadw __heap_start ref -> sp
+   and sp HEADER_DATA_MASK -> sp
+   jl sp HEADER_DATA_MASK ?small_array             ; jump if this array uses compact representation
    call_2s zml_array_size ref -> sp
    add sp 3 -> sp
    and sp NOT_ONE -> sp   ; even size ==> sp = size+2; odd size ==> sp = size+3
+   ret_popped
+
+small_array:
+   call_2s zml_array_size ref -> sp
+   add sp 2 -> sp
+   and sp NOT_ONE -> sp   ; even size ==> sp = size+2; odd size ==> sp = size+1
    ret_popped
 
 
@@ -359,17 +366,12 @@ end_of_list:
    call_vs __zml_mark ref is_set -> sp
    jz sp ?already_marked                  ; jump if already marked
    call_2s __zml_tag_get ref -> tag       ; dispatch based on tag value
-   jeq tag REFWORD_TAG     ?ref_word
-   jeq tag REFARRAY_TAG    ?ref_array
-   jeq tag VALUELIST_TAG   ?value_list
-   jeq tag REFLIST_TAG     ?ref_list
+   jeq tag REFARRAY_TAG  ?ref_array
+   jeq tag VALUELIST_TAG ?value_list
+   jeq tag REFLIST_TAG   ?ref_list
    rtrue                                  ; default case: no pointers to children
 
 already_marked:
-   rtrue
-
-ref_word:
-   call_vn __zml_word_mark_children ref is_set
    rtrue
 
 ref_array:
@@ -418,16 +420,10 @@ no_change:
    ; param ref: word index where block begins (heap-relative)
    ; local tag: storage for the block tag
    call_2s __zml_tag_get ref -> tag       ; dispatch based on tag value
-   jeq tag VALUEWORD_TAG   ?tag_word
-   jeq tag REFWORD_TAG     ?tag_word
    jeq tag VALUEARRAY_TAG  ?tag_array
    jeq tag REFARRAY_TAG    ?tag_array
    jeq tag VALUELIST_TAG   ?tag_list
    jeq tag REFLIST_TAG     ?tag_list
-
-tag_word:
-   push 2
-   ret_popped
 
 tag_array:
    call_2s __zml_array_storage_size ref -> sp
