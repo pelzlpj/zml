@@ -28,10 +28,10 @@ HEADER_DATA_MASK=1023   ; Bottom ten bits hold type-specific data
 
 
 ; The following are pre-shifted by 10 bits for ease of comparison
-VALUEARRAY_TAG=0     ; Header word for a value array cell
-REFARRAY_TAG=1024    ; Header word for a reference array cell
-VALUELIST_TAG=2048   ; Header word for a value list cell
-REFLIST_TAG=3072     ; Header word for a reference list cell
+VALUEARRAY_TAG=0     ; Header bits for a value array cell
+REFARRAY_TAG=1024    ; Header bits for a reference array cell
+VALUELIST_TAG=2048   ; Header bits for a value list cell
+REFLIST_TAG=3072     ; Header bits for a reference list cell
 
 
 
@@ -48,34 +48,32 @@ __zml_main::
    quit
 
 
-.FUNCT __main, ref1, ref2
-   call_vs zml_alloc_value_array 0 15 -> ref1
-   call_vs zml_array_size ref1 -> sp
-
-   call_vs zml_alloc_value_array 1 31 -> ref1
-   call_vn zml_array_set ref1 0 15
-   call_vs zml_array_get ref1 0 -> sp
-   print_num sp
+.FUNCT __main, ref1, ref2, ref3
+   call_vs zml_alloc_value_array 1 1  -> ref1
+   call_vs zml_alloc_value_array 3 1  -> ref2
+   call_vs zml_alloc_ref_array 3 ref1 -> ref1
+   call_vs zml_alloc_value_array 1 1  -> ref3
+   call_vs zml_array_set ref1 2 ref3
+   call_vn zml_alloc_value_array 1 1
+   call_vn zml_alloc_value_array 4 1
+   call_vs zml_alloc_value_array 1 1  -> ref3
+   call_vs zml_array_set ref1 1 ref3
+   
+   print "mark"
    new_line
-
-   call_vs zml_alloc_value_array 1023 15 -> ref1
-   call_vs zml_array_size ref1 -> sp
-   call_vn zml_array_set ref1 0 14
-   call_vs zml_array_get ref1 0 -> sp
-   print_num sp
-   new_line
-
-   call_vs zml_alloc_value_array 1024 15 -> ref1
-   call_vs zml_array_size ref1 -> sp
-   print_num sp
-   new_line
-
-   call_vs zml_alloc_value_array 1025 15 -> ref1
-   call_vs zml_array_size ref1 -> sp
-   print_num sp
-   new_line
-
+   call_vn __zml_mark_recursive ref1 1
    save -> sp
+
+   print "sweep"
+   new_line
+   call_1n __zml_sweep
+   save -> sp
+
+   print "compact"
+   new_line
+   call_1n __zml_compact
+   save -> sp
+
    rtrue
    
 
@@ -174,6 +172,26 @@ small_array:
    ret header_size
 
 
+.FUNCT __zml_array_get_element_address, arr, index
+   ; Retrieve the physical address of the given array location.
+   ;
+   ; param arr: word index where array begins (heap-relative)
+   ; param index: array location to retrieve; 0 <= index < array size
+   ;
+   ; Returns: word index where element is stored, relative to heap start
+   loadw __heap_start arr -> sp
+   and sp HEADER_DATA_MASK -> sp
+   jl sp HEADER_DATA_MASK ?small_array             ; jump if this array uses compact representation
+   add arr 2 -> sp
+   add sp index -> sp
+   ret_popped
+
+small_array:
+   add arr 1 -> sp
+   add sp index -> sp
+   ret_popped
+
+
 .FUNCT zml_array_get, arr, index
    ; Retrieve the value stored in the array at the given index.
    ;
@@ -181,17 +199,7 @@ small_array:
    ; param index: array value to retrieve; 0 <= index < array size
    ;
    ; Returns: array value
-   loadw __heap_start arr -> sp
-   and sp HEADER_DATA_MASK -> sp
-   jl sp HEADER_DATA_MASK ?small_array             ; jump if this array uses compact representation
-   add arr 2 -> sp
-   add sp index -> sp
-   loadw __heap_start sp -> sp
-   ret_popped
-
-small_array:
-   add arr 1 -> sp
-   add sp index -> sp
+   call_vs __zml_array_get_element_address arr index -> sp
    loadw __heap_start sp -> sp
    ret_popped
    
@@ -202,17 +210,7 @@ small_array:
    ; param arr: word index where array begins (heap-relative)
    ; param index: array value to set; 0 <= word < array size
    ; param val: word to place in array
-   loadw __heap_start arr -> sp
-   and sp HEADER_DATA_MASK -> sp
-   jl sp HEADER_DATA_MASK ?small_array             ; jump if this array uses compact representation
-   add arr 2 -> sp
-   add sp index -> sp
-   storew __heap_start sp val
-   rtrue
-
-small_array:
-   add arr 1 -> sp
-   add sp index -> sp
+   call_vs __zml_array_get_element_address arr index -> sp
    storew __heap_start sp val
    rtrue
 
@@ -233,6 +231,29 @@ mark_children:
    call_vs zml_array_get ref count -> sp
    call_vn __zml_mark_recursive sp is_set    ; mark child
    jump mark_children
+
+done:
+   rtrue
+
+
+.FUNCT __zml_array_iter_inplace, ref, f, arg2, arg3, i, size
+   ; Applies 'f' to the physical address of each array element, in turn.
+   ;
+   ; param ref: word index where array cell begins (heap-relative)
+   ; param f: function of four arguments, applied in turn to the heap-relative
+   ;     word address of each element.
+   ; param arg2, arg3: generic arguments passed to f
+   ; local i: counter
+   ; local size: size of array
+   store 'i 0
+   call_2s zml_array_size ref -> size
+
+loop:
+   jeq i size ?done                          ; jump if array has been traversed
+   call_vs __zml_array_get_element_address ref i -> sp
+   call_vn f sp arg2 arg3
+   inc 'i
+   jump loop
 
 done:
    rtrue
@@ -342,6 +363,37 @@ end_of_list:
    rtrue
 
 
+.FUNCT __zml_value_list_fixup_pointers, ref, table, table_dwords, pointer_addr
+   ; Given a break table, adjusts the value of the pointer stored
+   ; in this value list cell (if any).
+   ;
+   ; param ref: word index where list cell begins (heap-relative)
+   ; param table: word index where break table begins (heap-relative)
+   ; param table_dwords: length of break table, in dwords
+   ; local pointer_addr: location of value to be fixed up
+   add ref 2 -> pointer_addr
+   loadw __heap_start pointer_addr -> sp
+   jeq sp LIST_NULL ?end_of_list
+   call_vn __zml_fixup_pointer pointer_addr table table_dwords
+end_of_list:
+   rtrue
+
+
+.FUNCT __zml_ref_list_fixup_pointers, ref, table, table_dwords, pointer_addr
+   ; Given a break table, adjusts the value of the pointers stored
+   ; in this reference list cell.
+   ;
+   ; param ref: word index where list cell begins (heap-relative)
+   ; param table: word index where break table begins (heap-relative)
+   ; param table_dwords: length of break table, in dwords
+   ; local pointer_addr: location of value to be fixed up
+   add ref 1 -> pointer_addr
+   loadw __heap_start pointer_addr -> sp
+   call_vn __zml_fixup_pointer pointer_addr table table_dwords          ; fixup head
+   call_vn __zml_value_list_fixup_pointers ref table table_dwords       ; fixup tail
+   rtrue
+
+
 .FUNCT __zml_ref_list_mark_children, ref, is_set
    ; Recursively set or clear the 'mark' bit on all children belonging to
    ; this list cell, and on the chain of list cells to which this cell
@@ -420,10 +472,10 @@ no_change:
    ; param ref: word index where block begins (heap-relative)
    ; local tag: storage for the block tag
    call_2s __zml_tag_get ref -> tag       ; dispatch based on tag value
-   jeq tag VALUEARRAY_TAG  ?tag_array
-   jeq tag REFARRAY_TAG    ?tag_array
-   jeq tag VALUELIST_TAG   ?tag_list
-   jeq tag REFLIST_TAG     ?tag_list
+   jeq tag VALUEARRAY_TAG ?tag_array
+   jeq tag REFARRAY_TAG   ?tag_array
+   jeq tag VALUELIST_TAG  ?tag_list
+   jeq tag REFLIST_TAG    ?tag_list
 
 tag_array:
    call_2s __zml_array_storage_size ref -> sp
@@ -450,9 +502,6 @@ tag_list:
    store 'freelist_last LIST_NULL
 
 traverse_next:
-   print "visit "
-   print_num block
-   new_line
    jeq block freelist_end ?end_traversal                             ; jump if entire heap was examined
    loadw __heap_start block -> header
    and header FREELIST_BIT -> sp
@@ -507,6 +556,271 @@ end_traversal:
 
 no_new_freelist:
    store 'freelist_head freelist_end
+   rtrue
+
+
+.FUNCT __zml_compact, table_dwords, source, dest, size, freelist_next
+   ; Compacts the heap, using a Haddon-Waite-style algorithm.  This is
+   ; typically called when the heap has been freshly swept.
+   ;
+   ; The implementation uses an optimization which is not present in
+   ; Haddon-Waite: the break table is constructed on the stack in
+   ; a single pass, then relocated to free heap memory after the
+   ; memory contents are moved.  This approach avoids the need to
+   ; "roll the table" and sort it.
+   ;
+   ; local table_dwords: number of break table entries
+   ; local source: address of a block to be moved
+   ; local dest: address where block should be moved
+   ; local size: size of the block to move
+   ; local freelist_next: next node in the freelist
+   store 'table_dwords 0
+   jeq freelist_head freelist_end ?end_traversal                     ; jump if all free memory is at the end
+
+traverse_freelist:
+   ; figure out the size of a block to move, and how far to move it
+   load 'freelist_head -> dest                                       ; word address where block gets moved
+   call_2s __zml_freelist_node_size freelist_head -> sp
+   add freelist_head sp -> source                                    ; word address where block starts
+   call_2s __zml_freelist_node_next freelist_head -> freelist_next
+   sub freelist_next freelist_head -> size
+   call_2s __zml_freelist_node_size freelist_head -> sp
+   sub size sp -> size                                               ; number of words in the block
+   add freelist_head size -> freelist_head                           ; new location for free space
+
+   ; construct break table entry for this relocation; because we copy from the stack
+   ; to heap going from high addresses to low, the table values on the heap will be
+   ; ordered as (pointer, distance), (pointer, distance), ...
+   push source                      ; push pointer
+   sub source dest -> sp            ; push relocation distance
+   inc 'table_dwords
+
+   ; translate these heap-relative word addresses into byte addresses
+   ; FIXME: do I have to worry about signed arithmetic here?
+   log_shift source 1 -> source
+   add source __heap_start -> source
+   log_shift dest 1 -> dest
+   add dest __heap_start -> dest
+   mul size 2 -> size
+
+   ; relocate the block
+   copy_table source dest size
+
+   ; construct a new freelist entry for the merged free space
+   call_2s __zml_freelist_node_size freelist_next -> size
+   add freelist_next size -> size
+   sub size freelist_head -> size                                    ; new size of merged freelist node
+   call_2s __zml_freelist_node_next freelist_next -> freelist_next   ; next_ptr for merged freelist node
+   call_vn __zml_freelist_node_cons freelist_head size freelist_next 
+   jeq freelist_next LIST_NULL ?end_traversal                        ; jump if merged node is end-of-list
+   jump traverse_freelist
+
+end_traversal:
+   ; move the break table to the heap (copy is done in reverse to keep the table ordered)
+   call_2s __zml_freelist_node_size freelist_end -> sp
+   add freelist_end sp -> dest                                       ; dest is at the very end of heap memory (+ 1)
+   mul table_dwords 2 -> size
+
+copy_break_table:
+   jz size ?copy_done
+   dec 'dest
+   storew __heap_start dest sp
+   dec 'size
+   jump copy_break_table
+
+copy_done:
+   call_vn __zml_compact_fixup_pointers dest table_dwords
+   rtrue
+
+
+.FUNCT __zml_compact_fixup_pointers, table, table_dwords, block, tag
+   ; Modify all the pointers stored on the heap, using the transformations specified
+   ; in the break table.
+   ;
+   ; param table: word address where break table begins (heap-relative)
+   ; param table_dwords: length of break table, in double-words
+   ; local block: pointer to current block (heap-relative)
+   ; local tag: storage for block tag
+   store 'block 0
+
+traverse_compacted:
+   jeq block freelist_head ?end_traversal                            ; jump if we reach end of compacted heap
+   call_2s __zml_tag_get block -> tag                                ; dispatch based on tag value
+   jeq tag VALUEARRAY_TAG ?fixup_done
+   jeq tag REFARRAY_TAG   ?tag_ref_array
+   jeq tag VALUELIST_TAG  ?tag_value_list
+   jeq tag REFLIST_TAG    ?tag_ref_list
+
+tag_ref_array:
+   call_vn2 __zml_array_iter_inplace block __zml_fixup_pointer table table_dwords
+   jump fixup_done
+
+tag_value_list:
+   call_vn __zml_value_list_fixup_pointers block table table_dwords
+   jump fixup_done
+   
+tag_ref_list:
+   call_vn __zml_ref_list_fixup_pointers block table table_dwords
+
+fixup_done:
+   call_2s __zml_allocated_block_size block -> sp
+   add block sp -> block
+   jump traverse_compacted
+
+end_traversal:
+   rtrue
+
+
+.FUNCT __zml_bisect_fixup_table, table, table_dwords, pointer, lower, upper, mid
+   ; Given a heap pointer, determine which break table entry should be used to
+   ; adjust its value.
+   ;
+   ; param table: word address where break table begins (heap relative)
+   ; param table_dwords: length of break table, in double-words
+   ; param pointer: heap pointer to be adjusted
+   ; local lower: lower bound on table index
+   ; local upper: upper bound on table index
+   ; local mid: bisection location
+   ;
+   ; Returns: dword index of last table entry such that (pointer >= table entry),
+   ;          or -1 if the pointer is smaller than all table entries
+   
+   jz table_dwords ?return_no_match             ; jump if table is empty
+   loadw __heap_start table -> sp
+   jl pointer sp ?return_no_match               ; jump if pointer is smaller than first table entry
+
+   store 'lower 0
+   store 'upper table_dwords                    ; (using half-open interval arithmetic)
+
+   mul table 2 -> table
+   add __heap_start table -> table              ; convert table to a byte array address, for use with loadw
+
+bisect:
+   sub upper lower -> sp
+   jeq sp 1 ?bisect_done                        ; jump if bisection range has been reduced to one element
+   add lower upper -> mid
+   div mid 2 -> mid                             ; "mid" as dword
+   mul mid 2 -> sp                              ; "mid" as word
+   loadw table sp -> sp                         ; lookup pointer value in table
+   jl pointer sp ?below_mid                     ; jump if pointer value is in bottom half
+   load 'mid -> lower                           ; closed interval--"lower" is <= the pointer
+   jump bisect
+
+below_mid:
+   load 'mid -> upper                           ; open interval--"upper" is strictly > the pointer
+   jump bisect
+
+bisect_done:
+   ret lower
+
+return_no_match:
+   ret -1
+
+
+.FUNCT __zml_test_bisect, table, table_dwords, i
+   store 'table 16
+   load 'table -> i
+
+   storew __heap_start i 1
+   inc 'i
+   storew __heap_start i 0
+   inc 'i
+
+   storew __heap_start i 2
+   inc 'i
+   storew __heap_start i 0
+   inc 'i
+
+   storew __heap_start i 5
+   inc 'i
+   storew __heap_start i 0
+   inc 'i
+
+   storew __heap_start i 8 
+   inc 'i
+   storew __heap_start i 0
+   inc 'i
+
+   storew __heap_start i 100 
+   inc 'i
+   storew __heap_start i 0
+   inc 'i
+
+   storew __heap_start i 101 
+   inc 'i
+   storew __heap_start i 0
+   inc 'i
+
+   sub i table -> table_dwords
+   div table_dwords 2 -> table_dwords
+
+   call_vs __zml_bisect_fixup_table table table_dwords 0 -> sp
+   print "expected -1, got "
+   print_num sp
+   new_line
+
+   call_vs __zml_bisect_fixup_table table table_dwords 1 -> sp
+   print "expected 0, got "
+   print_num sp
+   new_line
+
+   call_vs __zml_bisect_fixup_table table table_dwords 2 -> sp
+   print "expected 1, got "
+   print_num sp
+   new_line
+
+   call_vs __zml_bisect_fixup_table table table_dwords 6 -> sp
+   print "expected 2, got "
+   print_num sp
+   new_line
+
+   call_vs __zml_bisect_fixup_table table table_dwords 50 -> sp
+   print "expected 3, got "
+   print_num sp
+   new_line
+
+   call_vs __zml_bisect_fixup_table table table_dwords 101 -> sp
+   print "expected 5, got "
+   print_num sp
+   new_line
+
+   call_vs __zml_bisect_fixup_table table table_dwords 102 -> sp
+   print "expected 5, got "
+   print_num sp
+   new_line
+
+   call_vs __zml_bisect_fixup_table table table_dwords 1000 -> sp
+   print "expected 5, got "
+   print_num sp
+   new_line
+
+   rtrue
+
+
+.FUNCT __zml_fixup_pointer, pointer_addr, table, table_dwords, pointer_val
+   ; Given a break table and the address of a  pointer to be adjusted,
+   ; updates the pointer in-place.
+   ;
+   ; param pointer_addr: word address containing a pointer (heap-relative)
+   ; param table: word address where break table begins (heap relative)
+   ; param table_dwords: length of break table, in double-words
+   ; local pointer_val: value stored at pointer_addr
+   loadw __heap_start pointer_addr -> pointer_val
+   call_vs __zml_bisect_fixup_table table table_dwords pointer_val -> sp
+   load 'sp -> sp                                     ; duplicate stack value (table index)
+   jeq sp -1 ?no_fixup                                ; jump if no fixup required
+
+   ; compute heap-relative address of break table adjustment value
+   mul sp 2 -> sp
+   add table sp -> sp
+   inc 'sp
+
+   ; apply adjustment to pointer value
+   loadw __heap_start sp -> sp
+   sub pointer_val sp -> pointer_val
+   storew __heap_start pointer_addr pointer_val
+
+no_fixup:
    rtrue
 
 
