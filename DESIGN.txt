@@ -68,7 +68,7 @@ Mark-and-Sweep:
       (newly-created) free list.  Adjacent free list cells are
       coalesced to assist in allocating larger blocks.
 
-Value Representation
+Value Representation:
 
    * All blocks shall be aligned on a two-word boundary, and shall have a
      two-word-aligned length.  This ensures that (1) every free area is
@@ -160,4 +160,51 @@ Value Representation
      block which contains both a pointer to an arbitrary item and a
      pointer to another value list cell.  The layout is otherwise identical
      to the value list cell.
+
+Roots Table:
+
+   The table of roots needs to efficiently support the following
+   operations:
+
+      1) root_reference = register_root(heap_reference)
+         
+         Generate a new root identifier for a heap reference, and store
+         the heap reference in a location where the GC can track it.
+
+      2) heap_reference = lookup_root(root_reference)
+
+         Given a root identifier for a heap reference, get the current
+         value of the heap reference.  This is required because heap
+         references will get relocated by the compaction algorithm.
+
+      3) unregister_root(root_reference)
+
+         Remove a root identifier from the set of GC roots.
+
+   These goals can be accomplished using an array of heap references at
+   the end of RAM; the physical address of a table entry serves as the
+   "root reference".  Each (word-sized) element of the array is either
+   occupied by a heap reference, or is a freelist element.  The freelist
+   carries no data; each node is simply a word pointer to the next
+   freelist node.
+
+   The roots table can easily be made to grow dynamically.  Initially it
+   has size 0.  When register_root() is invoked and the freelist is
+   empty, then the table extends one position to the "left" (decreasing
+   memory address).  The heap extends to the "right", so the heap and
+   the roots will grow towards each other as memory is exhausted.
+
+   Potentially the roots table could be made to shrink dynamically, as
+   roots are dropped.  I suspect that this is not a high-value feature.
+   It is significantly more complex to implement than the case of
+   dynamically increasing the table size (it basically works out to
+   running a filter() operation on the freelist to get rid of all the
+   nodes below a certain memory address).
+
+   Note that heap references in the roots table can be easily
+   disambiguated from freelist entries, just by examining the pointer
+   values.  Freelist entries are pointers to addresses inside the roots
+   area, while root entries are pointers to addresses inside the heap
+   area.  This property makes it straightforward for the GC to scan the
+   roots table when it carries out the "mark" operation.
 

@@ -238,7 +238,7 @@ GLOBAL::
 .GVAR v234=0
 .GVAR v235=0
 .GVAR v236=0
-.GVAR v237=0
+.GVAR root_freelist_head=0    ; Word-pointer to root table freelist (heap-relative)
 .GVAR freelist_head=0         ; Word-pointer to freelist (heap relative)
 .GVAR freelist_end=0          ; Word-pointer to last node in freelist (heap relative)
 

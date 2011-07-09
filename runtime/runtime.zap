@@ -48,41 +48,68 @@ __zml_main::
    quit
 
 
-.FUNCT __main, ref1, ref2, ref3
-   call_vs zml_alloc_value_array 1 1  -> ref1
-   call_vs zml_alloc_value_array 3 1  -> ref2
-   call_vs zml_alloc_ref_array 3 ref1 -> ref1
-   call_vs zml_alloc_value_array 1 1  -> ref3
-   call_vs zml_array_set ref1 2 ref3
-   call_vn zml_alloc_value_array 1 1
-   call_vn zml_alloc_value_array 4 1
-   call_vs zml_alloc_value_array 1 1  -> ref3
-   call_vs zml_array_set ref1 1 ref3
-   
-   print "mark"
-   new_line
-   call_vn __zml_mark_recursive ref1 1
-   save -> sp
+.FUNCT __main, ref1, ref2, ref3, root1, root2, root3
+   call_vs zml_alloc_value_array 5 15  -> ref1
+   call_vs zml_alloc_value_array 4 10  -> ref2
+   call_2s zml_register_root ref2 -> root2
+   call_vs zml_alloc_value_array 1 8  -> ref1
+   call_2s zml_register_root ref1 -> root1
 
-   print "sweep"
+   print "registered root: "
+   print_num root1
    new_line
+
+   loadw __heap_start root1 -> sp
+   print "heap_ptr: "
+   print_num sp
+   new_line
+
+   call_1n __zml_mark_roots
    call_1n __zml_sweep
-   save -> sp
-
-   print "compact"
-   new_line
    call_1n __zml_compact
+
+   loadw __heap_start root1 -> ref1
+   print "heap pointer was relocated to "
+   print_num ref1
+   new_line
+
+   call_vs zml_array_get ref1 0 -> sp
+   print "heap array holds value "
+   print_num sp
+   new_line
+
    save -> sp
 
+   call_2n zml_unregister_root root2
+   call_1n __zml_mark_roots
+   call_1n __zml_sweep
+   call_1n __zml_compact
+
+   loadw __heap_start root1 -> ref1
+   print "heap pointer was relocated to "
+   print_num ref1
+   new_line
+
+   call_vs zml_array_get ref1 0 -> sp
+   print "heap array holds value "
+   print_num sp
+   new_line
+
+   save -> sp
    rtrue
    
 
 .FUNCT __zml_init_heap
    ; Initialize the heap with zero words allocated.  We end up with
-   ; a freelist with one entry representing the entire heap.
-   call_vn __zml_freelist_node_cons 0 HEAP_WORDS LIST_NULL
+   ; a freelist with one entry representing almost the entire heap;
+   ; one word is reserved for a root table freelist of size 1.
+   sub HEAP_WORDS 1 -> sp
+   call_vn __zml_freelist_node_cons 0 sp LIST_NULL
    store 'freelist_head 0
    store 'freelist_end  0
+
+   sub HEAP_WORDS 1 -> root_freelist_head
+   storew __heap_start root_freelist_head LIST_NULL
    rtrue
 
 
@@ -616,6 +643,7 @@ traverse_freelist:
    jump traverse_freelist
 
 end_traversal:
+   load 'freelist_head -> freelist_end
    ; move the break table to the heap (copy is done in reverse to keep the table ordered)
    call_2s __zml_freelist_node_size freelist_end -> sp
    add freelist_end sp -> dest                                       ; dest is at the very end of heap memory (+ 1)
@@ -633,7 +661,7 @@ copy_done:
    rtrue
 
 
-.FUNCT __zml_compact_fixup_pointers, table, table_dwords, block, tag
+.FUNCT __zml_compact_fixup_pointers, table, table_dwords, block, tag, roots_table_boundary
    ; Modify all the pointers stored on the heap, using the transformations specified
    ; in the break table.
    ;
@@ -641,6 +669,8 @@ copy_done:
    ; param table_dwords: length of break table, in double-words
    ; local block: pointer to current block (heap-relative)
    ; local tag: storage for block tag
+   ; local roots_table_boundary: any pointers >= this address are root freelist
+   ;     entries; otherwise they are heap pointers to be marked
    store 'block 0
 
 traverse_compacted:
@@ -668,6 +698,24 @@ fixup_done:
    jump traverse_compacted
 
 end_traversal:
+   ; now fixup pointers in the roots table
+   call_2s __zml_freelist_node_size freelist_end -> sp
+   add freelist_end sp -> roots_table_boundary
+
+   sub roots_table_boundary 1 -> block
+check_next_root:
+   inc 'block
+   jeq block HEAP_WORDS ?end_roots_table                       ; jump if roots table has been traversed
+   loadw __heap_start block -> tag
+   jeq tag LIST_NULL ?check_next_root                          ; jump if this is end-of-freelist
+   jl tag roots_table_boundary ?is_heap_ref                    ; jump if this is a heap pointer and not a freelist entry
+   jump check_next_root
+
+is_heap_ref:
+   call_vn __zml_fixup_pointer block table table_dwords
+   jump check_next_root
+
+end_roots_table:
    rtrue
 
 
@@ -835,7 +883,7 @@ no_fixup:
    ret_popped
 
 
-.FUNCT __zml_alloc_block, size_words, curr_node, prev_node, next_node, node_size
+.FUNCT __zml_alloc_block, size_words, curr_node, prev_node, next_node, node_size, is_swept, is_compacted
    ; Allocate a block of the given size, which shall be an even nonzero value.  If
    ; unsuccessful, the program is aborted with an "out of memory" message.
    ;
@@ -844,8 +892,14 @@ no_fixup:
    ; local curr_node: pointer to current freelist node
    ; local next_node: pointer to next freelist node, or FREELIST_INVALID
    ; local node_size: stores size of a node
+   ; local is_swept: true if heap has already been swept
+   ; local is_compacted: true if heap has already been compacted
    ;
    ; Returns: word index where block begins (heap-relative)
+   store 'is_swept 0
+   store 'is_compacted 0
+
+start_alloc:
    jeq freelist_head LIST_NULL ?end_of_list             ; jump if zero memory available
    store 'prev_node LIST_NULL
    load 'freelist_head -> curr_node
@@ -874,6 +928,19 @@ move_next_node:
    jump try_alloc_node
 
 end_of_list:
+   jeq is_swept 1 ?compact_heap                             ; jump if we already tried sweeping the heap to free memory
+   call_1n __zml_mark_roots
+   call_1n __zml_sweep
+   store 'is_swept 1
+   jump start_alloc
+
+compact_heap:
+   jeq is_compacted 1 ?out_of_memory                        ; jump if we already tried compacting the heap to free memory
+   call_1n __zml_compact
+   store 'is_compacted 1
+   jump start_alloc
+
+out_of_memory:
    print "Out of memory."
    new_line
    quit
@@ -946,5 +1013,97 @@ update_freelist_end:
    storew __heap_start node next
    rtrue
 
+
+.FUNCT zml_register_root, heap_ref, root, size, is_compacted
+   ; Creates a new entry in the table of GC roots.
+   ;
+   ; param heap_ref: word pointer to a heap-allocated block which is to be
+   ;     registered as a root (heap relative)
+   ; local root: new root value
+   ; local size: stores size of a heap freelist entry
+   ; local is_compacted: true if heap has been compacted
+   ;
+   ; Returns: unique root identifier.  The root identifier is a heap-relative word
+   ;     pointer which, when dereferenced, yields the current location of the
+   ;     heap-allocated block.
+   ;
+   ; Implementation note: by design, the root freelist is never allowed to be
+   ; empty.  This ensures that we always have a place to store heap_ref inside the
+   ; roots table.  To satisfy that requirement, this function must ensure that
+   ; if the *last* root entry is allocated, then the table must be grown before
+   ; the function exits.  It may be necessary to compact the heap in order to
+   ; grow the table--and it will then be safe to perform the compaction, because the
+   ; heap_ref will have already been successfully registered at that time.
    
+   store 'is_compacted 0
+   load 'root_freelist_head -> root
+   loadw __heap_start root_freelist_head -> root_freelist_head    ; allocate root from the freelist
+   storew __heap_start root heap_ref                              ; register the root
+   jeq root_freelist_head LIST_NULL ?empty_freelist               ; jump if the freelist is now empty
+   ret root
+
+empty_freelist:
+   ; we allocate two words at a time, to maintain dword alignment of heap
+   call_2s __zml_freelist_node_size freelist_end -> size
+   jl size 4 ?compact_memory                                      ; jump if there is not enough room at the end of heap memory
+   sub size 2 -> size
+   call_vn __zml_freelist_node_cons freelist_end size LIST_NULL   ; resize the last heap freelist entry
+   add freelist_end size -> root_freelist_head                    ; the words following the heap freelist now become a root
+   add root_freelist_head 1 -> sp                                 ;     freelist of size 2
+   storew __heap_start root_freelist_head sp
+   add root_freelist_head 1 -> sp
+   storew __heap_start sp LIST_NULL
+   ret root
+
+compact_memory:
+   jeq is_compacted 1 ?out_of_memory                              ; jump if heap was already compacted
+   call_1n __zml_mark_roots
+   call_1n __zml_sweep
+   call_1n __zml_compact
+   store 'is_compacted 1
+   jump empty_freelist                                            ; check if we have enough memory now
+
+out_of_memory:
+   print "Out of memory."
+   new_line
+   quit
+
+
+.FUNCT zml_unregister_root, root_ref
+   ; Unregister a root reference which had been obtained from zml_register_root.
+   ;
+   ; param root_ref: root reference to be dropped from the GC roots table
+   storew __heap_start root_ref root_freelist_head
+   store 'root_freelist_head root_ref
+   rtrue
+
+
+.FUNCT __zml_mark_roots, i, roots_table_boundary, heap_ref
+   ; Recursively mark all heap memory which is reachable through entries in
+   ; the table of roots.
+   ;
+   ; local i: counter
+   ; local roots_table_boundary: any pointers >= this address are root freelist
+   ;     entries; otherwise they are heap pointers to be marked
+   ; local heap_ref: heap reference to be marked
+   call_2s __zml_freelist_node_size freelist_end -> sp
+   add freelist_end sp -> roots_table_boundary
+
+   load 'roots_table_boundary -> i
+check_next_root:
+   jeq i HEAP_WORDS ?end_roots_table                           ; jump if roots table has been traversed
+   loadw __heap_start i -> heap_ref
+   inc 'i
+   jeq heap_ref LIST_NULL ?check_next_root                     ; jump if this is end-of-freelist
+   jl heap_ref roots_table_boundary ?is_heap_ref               ; jump if this is a heap pointer and not a freelist entry
+   jump check_next_root
+
+is_heap_ref:
+   call_vn __zml_mark_recursive heap_ref 1
+   jump check_next_root
+
+end_roots_table:
+   rtrue
+
+
 .END
