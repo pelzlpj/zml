@@ -1,5 +1,5 @@
 (*  zml -- an ML compiler for the Z-Machine
- *  Copyright (C) 2009 Paul Pelzl
+ *  Copyright (C) 2009-2011 Paul Pelzl
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, Version 2,
@@ -26,15 +26,20 @@
     List.iter (fun (key, value) -> Hashtbl.add table key value) assoc;
     table
 
-  let keyword_assoc = [
-    "if", IF;
-    "then", THEN;
-    "else", ELSE;
-    "let", LET;
-    "rec", REC;
+  let keyword_tokens = [
+    "if"   , IF;
+    "then" , THEN;
+    "else" , ELSE;
+    "let"  , LET;
+    "rec"  , REC;
+    "in"   , IN;
+    "not"  , NOT;
+    "mod"  , MOD;
+    "true" , BOOL(true);
+    "false", BOOL(false);
   ]
 
-  let keyword_table = create_hashtable keyword_assoc
+  let keyword_table = create_hashtable keyword_tokens
 }
 
 
@@ -52,18 +57,12 @@ rule token = parse
   | newline
     { Lexing.new_line lexbuf;   (* Track line numbers during lexing, for better error reporting *)
       token lexbuf }
-  | space+
+  | ws+
     { token lexbuf }
   | '('
     { LPAREN }
   | ')'
     { RPAREN }
-  | "true"
-    { BOOL(true) }
-  | "false"
-    { BOOL(false) }
-  | "not"
-    { NOT }
   | digit+
     { INT(int_of_string (Lexing.lexeme lexbuf)) }
   | '-'
@@ -74,8 +73,6 @@ rule token = parse
     { STAR }
   | '/'
     { SLASH }
-  | "mod"
-    { MOD }
   | '='
     { EQ }
   | "<>"
@@ -93,7 +90,7 @@ rule token = parse
   | lower (lower|upper|digit|'_')*
     { let s = Lexing.lexeme lexbuf in
       try Hashtbl.find keyword_table s
-      with Not_found -> LIDENT(Lexing.lexeme lexbuf) }
+      with Not_found -> IDENT(Lexing.lexeme lexbuf) }
   | eof
     { EOF }
   | _

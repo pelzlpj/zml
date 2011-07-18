@@ -1,6 +1,6 @@
 %{
 (*  zml -- an ML compiler for the Z-Machine
- *  Copyright (C) 2009 Paul Pelzl
+ *  Copyright (C) 2009-2011 Paul Pelzl
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, Version 2,
@@ -19,13 +19,16 @@
  *  <pelzlpj@gmail.com>.
  *)
 
+open Syntax
 %}
+
 
 %token IF
 %token THEN
 %token ELSE
 %token LET
 %token REC
+%token IN
 %token LPAREN
 %token RPAREN
 %token <bool> BOOL
@@ -43,7 +46,7 @@
 %token LT
 %token GT
 %token SEMI
-%token <string> LIDENT
+%token <string> IDENT
 %token EOF
 
 
@@ -63,8 +66,8 @@
 
 /* The entry point must be an expression of the given type. */
 
-%start expr
-%type <Syntax.t> expr
+%type <Syntax.t> exp
+%start exp
 
 %%
 
@@ -79,7 +82,7 @@ exp:
     { Bool ($1) }
   | INT
     { Int ($1) }
-  | LIDENT
+  | IDENT
     { Var ($1) }
   | NOT exp
     { Not ($2) }
@@ -95,11 +98,11 @@ exp:
   | exp SLASH exp
     { Div ($1, $3) }
   | exp MOD exp
-    { Mod ($1, $3)
-  | exp EQUAL exp
+    { Mod ($1, $3) }
+  | exp EQ exp
     { Eq ($1, $3) }
   | exp NEQ exp
-    { Not (Equal ($1, $3)) }
+    { Not (Eq ($1, $3)) }
   | exp LEQ exp
     { Not (Less ($3, $1)) }
   | exp GEQ exp
@@ -110,30 +113,30 @@ exp:
     { Less ($3, $1) }
   | IF exp THEN exp ELSE exp
     { If ($2, $4, $6) }
-  | LET LIDENT EQUAL exp IN exp
+  | LET IDENT EQ exp IN exp
     { Let ($2, $4, $6) }
   | LET REC fundef IN exp
     { LetRec ($3, $5) }
   | exp SEMI exp
-    { Let (Id.mktmp, $1, $3) }
+    { Let (Id.mktmp (), $1, $3) }
   | error
     { let spos = Parsing.symbol_start_pos () in
       let epos = Parsing.symbol_end_pos () in
-      let sofs = spos.pos_cnum - spos.pos_bol
-      and eofs = epos.pos_cnum - epos.pos_bol in
+      let sofs = spos.Lexing.pos_cnum - spos.Lexing.pos_bol
+      and eofs = epos.Lexing.pos_cnum - epos.Lexing.pos_bol in
       failwith (Printf.sprintf 
         "Parse error, line %u char %u through line %u char %u."
-        spos.pos_lnum sofs epos.pos_lnum eofs) }
+        spos.Lexing.pos_lnum sofs epos.Lexing.pos_lnum eofs) }
         
 fundef:
-  | IDENT funargs EQUAL exp
+  | IDENT funargs EQ exp
     { {fun_name = $1; fun_args = $2; fun_body = $4} }
     
 funargs:
-  | IDENT fun_args
+  | IDENT funargs
     { $1 :: $2 }
   | IDENT
-    { $1 }
+    { [$1] }
   
 
 

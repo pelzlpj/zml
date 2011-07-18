@@ -1,2 +1,9 @@
 *.z5
 *.sav
+parser.ml
+lexer.ml
+*.cmx
+*.cmi
+parser.output
+parser.mli
+zml

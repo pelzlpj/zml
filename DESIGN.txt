@@ -16,10 +16,10 @@ Allocation looks something like this:
       chunk with type tag information, and initialize its value.
 
       A pointer to the new heap-allocated value is stored in a lookup
-      table at the end of RAM.  This lookup table is used by functions
-      which need to refer to the block; it gives us a way to relocate
-      blocks without modifying the stack, and it serves as a list of
-      roots for the GC.
+      table at the end of RAM (the "roots table").  This lookup table is
+      used by functions which need to refer to the block; it gives us a
+      way to relocate blocks without modifying the stack, and it serves
+      as a list of roots for the GC.
 
    2) If memory cannot be allocated, use a mark-and-sweep algorithm
       to locate unused blocks.  A new free list is formed from the
@@ -27,7 +27,7 @@ Allocation looks something like this:
 
    3) If memory still cannot be allocated, use a Haddon-Waite
       table-based compaction algorithm to relocate live blocks to the
-      beginning of the heap.  The lookup table at the end of RAM also
+      beginning of the heap.  The roots table at the end of RAM also
       has its pointers updated, so that any references on the stack
       remain valid.
 
@@ -40,26 +40,26 @@ usage:
 
    A) When a function needs to (1) perform an operation which may
       allocate memory and then (2) dereference a heap-allocated block,
-      then the heap-allocated block must be referred to via the block
+      then the heap-allocated block must be referred to via the roots
       lookup table.
    
    B) When a function allocates a block which it needs to refer to via
-      the block lookup table, then the function must explicitly free
-      the lookup table reference when it becomes unreachable (as the
-      function returns, if not before--unless the block is returned
-      to the caller, in which case a reference is live).
+      the roots lookup table, then the function must explicitly free
+      the root reference when it becomes unreachable (as the function
+      returns, if not before--unless the block is returned to the
+      caller, in which case a reference is live).
 
 In general, when calling a function using a heap-allocated block as an
-argument, it will be the lookup table pointer which is passed as the
+argument, it will be the roots table pointer which is passed as the
 argument to 'call'.  An exception could be when static analysis
 indicates that both that function and all recursively-called functions
 do not allocate memory.
 
 Mark-and-Sweep:
 
-   1) For each pointer in the global roots table, recursively mark the
-      pointed-to block.  "Recursively mark" means marking the block
-      and all unmarked blocks it points to, in recursive fashion.
+   1) For each pointer in the roots table, recursively mark the
+      pointed-to block.  "Recursively mark" means marking the block and
+      all unmarked blocks it points to, in recursive fashion.
 
    2) Traverse all memory blocks in the heap.  (The blocks are
       structured such that we can iterate through them efficiently.)
