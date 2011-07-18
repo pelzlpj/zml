@@ -115,6 +115,8 @@ exp:
     { If ($2, $4, $6) }
   | LET IDENT EQ exp IN exp
     { Let ($2, $4, $6) }
+  | LET fundef IN exp
+    { LetFun ($2, $4) }
   | LET REC fundef IN exp
     { LetRec ($3, $5) }
   | exp SEMI exp

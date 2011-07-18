@@ -18,7 +18,8 @@ type t =
   | Mod of t * t
   | If of t * t * t
   | Let of string * t * t
-  | LetRec of fundef_t * t
+  | LetFun of fundef_t * t    (* non-recursive function *)
+  | LetRec of fundef_t * t    (* recursive function *)
 and fundef_t = {
   fun_name : string;
   fun_args : string list;
@@ -61,6 +62,9 @@ let rec print_ast ast =
     sprintf "If (%s, %s, %s)" (print_ast a) (print_ast b) (print_ast c)
   | Let (a, b, c) ->
     sprintf "Let (%s, %s, %s)" a (print_ast b) (print_ast c)
+  | LetFun (f, a) ->
+    sprintf "LetFun ((%s, %s, %s), %s)"
+      f.fun_name (String.concat " " f.fun_args) (print_ast f.fun_body) (print_ast a)
   | LetRec (f, a) ->
     sprintf "LetRec ((%s, %s, %s), %s)"
       f.fun_name (String.concat " " f.fun_args) (print_ast f.fun_body) (print_ast a)
