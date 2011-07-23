@@ -20,6 +20,17 @@
  *)
 
 open Syntax
+
+(* Gets the file range corresponding to the current parser "symbol". *)
+let symbol_range () = {
+  fr_start = Parsing.symbol_start_pos ();
+  fr_end   = Parsing.symbol_end_pos ();
+}
+
+(* Constructs an untyped expression corresponding to the current
+ * parser "symbol". *)
+let untyped_expr_here expr = untyped_expr expr (symbol_range ())
+
 %}
 
 
@@ -77,50 +88,53 @@ exp:
   | LPAREN exp RPAREN
     { $2 }
   | LPAREN RPAREN
-    { Unit }
+    { untyped_expr_here Unit }
   | BOOL
-    { Bool ($1) }
+    { untyped_expr_here (Bool ($1)) }
   | INT
-    { Int ($1) }
+    { untyped_expr_here (Int ($1)) }
   | IDENT
-    { Var ($1) }
+    { untyped_expr_here (Var ($1)) }
   | NOT exp
-    { Not ($2) }
+    { untyped_expr_here (Not ($2)) }
   | MINUS exp
     %prec prec_unary_minus
-    { Neg ($2) }
+    { untyped_expr_here (Neg ($2)) }
   | exp PLUS exp
-    { Add ($1, $3) }
+    { untyped_expr_here (Add ($1, $3)) }
   | exp MINUS exp
-    { Sub ($1, $3) }
+    { untyped_expr_here (Sub ($1, $3)) }
   | exp STAR exp
-    { Mul ($1, $3) }
+    { untyped_expr_here (Mul ($1, $3)) }
   | exp SLASH exp
-    { Div ($1, $3) }
+    { untyped_expr_here (Div ($1, $3)) }
   | exp MOD exp
-    { Mod ($1, $3) }
+    { untyped_expr_here (Mod ($1, $3)) }
   | exp EQ exp
-    { Eq ($1, $3) }
+    { untyped_expr_here (Eq ($1, $3)) }
   | exp NEQ exp
-    { Not (Eq ($1, $3)) }
+    { untyped_expr_here (Neq ($1, $3)) }
   | exp LEQ exp
-    { Not (Less ($3, $1)) }
+    { untyped_expr_here (Leq ($1, $3)) }
   | exp GEQ exp
-    { Not (Less ($1, $3)) }
+    { untyped_expr_here (Geq ($1, $3)) }
   | exp LT exp
-    { Less ($1, $3) }
+    { untyped_expr_here (Less ($1, $3)) }
   | exp GT exp
-    { Less ($3, $1) }
+    { untyped_expr_here (Greater ($1, $3)) }
   | IF exp THEN exp ELSE exp
-    { If ($2, $4, $6) }
+    { untyped_expr_here (If ($2, $4, $6)) }
   | LET IDENT EQ exp IN exp
-    { Let ($2, $4, $6) }
+    /* Note: t.type_annot is associated with the IDENT in this case? */
+    { untyped_expr_here (Let ($2, $4, $6)) }
   | LET fundef IN exp
-    { LetFun ($2, $4) }
+    /* Note: t.type_annot is associated with the fun_name in this case? */
+    { untyped_expr_here (LetFun ($2, $4)) }
   | LET REC fundef IN exp
-    { LetRec ($3, $5) }
+    /* Note: t.type_annot is associated with the fun_name in this case? */
+    { untyped_expr_here (LetRec ($3, $5)) }
   | exp SEMI exp
-    { Let (Id.mktmp (), $1, $3) }
+    { untyped_expr_here (Let (Id.mktmp (), $1, $3)) }
   | error
     { let spos = Parsing.symbol_start_pos () in
       let epos = Parsing.symbol_end_pos () in
@@ -132,7 +146,8 @@ exp:
         
 fundef:
   | IDENT funargs EQ exp
-    { {fun_name = $1; fun_args = $2; fun_body = $4} }
+    { let untyped_fun_args = List.map (fun arg -> {fa_name = arg; fa_annot = None}) $2 in
+      {fun_name = $1; fun_args = untyped_fun_args; fun_body = $4} }
     
 funargs:
   | IDENT funargs
