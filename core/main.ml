@@ -2,7 +2,7 @@
 let parse filename =
   let ast =
     let in_ch = open_in filename in
-    let x = Parser.exp Lexer.token (Lexing.from_channel in_ch) in
+    let x = Parser.expr Lexer.token (Lexing.from_channel in_ch) in
     let () = close_in in_ch in
     x
   in

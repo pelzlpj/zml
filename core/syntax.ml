@@ -7,28 +7,18 @@ type file_range_t = {
   fr_end   : Lexing.position;   (** Ending position of a range of characters *)
 }
 
-type type_annotation_t = {
-(** [type_annotation_t] is a representation of a user-specified type annotation. *)
-  ta_type  : Type.t;            (** User-specified type to assign to this expression *)
-  ta_range : file_range_t;      (** Location where user specified the type information *)
-}
-
-type fun_arg_t = {
-(** [fun_arg_t] is a representation of a function argument. *)
-  fa_name  : string;                      (** Name of the argument *)
-  fa_annot : type_annotation_t option;    (** Type annotation for the argument, if provided *)
-}
-
 type t = {
 (** Type [t] represents a node in the AST, as determined by the first pass of parsing the source file. *)
-  expr       : expr_t;                    (** Expression parsed at this node *)
-  range      : file_range_t;              (** Location in file where expression is found *)
-  type_annot : type_annotation_t option;  (** Type annotation for this expression, if provided *)
+  expr       : expr_t;          (** Expression parsed at this node *)
+  range      : file_range_t;    (** Location in file where expression is found *)
+  type_annot : Type.t option;   (** Type annotation for this expression, if provided *)
 }
 
 and expr_t =
 (** [expr_t] defines all the expressions which are supported at the syntax level. *)
   | Unit
+  | Bool of bool
+  | Int of int
   | Eq of t * t
   | Neq of t * t
   | Leq of t * t
@@ -36,9 +26,6 @@ and expr_t =
   | Less of t * t
   | Greater of t * t
   | Not of t
-  | Bool of bool
-  | Int of int
-  | Var of string
   | Neg of t
   | Add of t * t
   | Sub of t * t
@@ -46,19 +33,15 @@ and expr_t =
   | Div of t * t
   | Mod of t * t
   | If of t * t * t
-  | Let of string * t * t
-  | LetFun of fundef_t * t    (* non-recursive function *)
-  | LetRec of fundef_t * t    (* recursive function *)
-and fundef_t = {
-  fun_name : string;
-  fun_args : fun_arg_t list;
-  fun_body : t
-}
+  | Var of string
+  | Let of (t list) * t * t     (* newly bound variables do not recur in the "equals" expression *)
+  | LetRec of (t list) * t * t  (* newly bound variables may recur in the "equals" expression *)
+  | Apply of t * (t list)
 
 
 (* Construct an AST node with no type information *)
 let untyped_expr expr range = {
-  expr = expr;
+  expr  = expr;
   range = range;
   type_annot = None;
 }
@@ -106,16 +89,20 @@ let rec print_ast (ast : t) =
       print_binary "Mod" a b
     | If (a, b, c) ->
       sprintf "If (%s, %s, %s)" (print_ast a) (print_ast b) (print_ast c)
-    | Let (a, b, c) ->
-      sprintf "Let (%s, %s, %s)" a (print_ast b) (print_ast c)
-    | LetFun (f, a) ->
-      let fun_arg_names = List.map (fun arg -> arg.fa_name) f.fun_args in
-      sprintf "LetFun ((%s, %s, %s), %s)"
-        f.fun_name (String.concat " " fun_arg_names) (print_ast f.fun_body) (print_ast a)
-    | LetRec (f, a) ->
-      let fun_arg_names = List.map (fun arg -> arg.fa_name) f.fun_args in
-      sprintf "LetRec ((%s, %s, %s), %s)"
-        f.fun_name (String.concat " " fun_arg_names) (print_ast f.fun_body) (print_ast a)
+    | Let (a_list, b, c) ->
+      sprintf "Let ([%s], %s, %s)"
+        (String.concat "; " (List.fold_left (fun acc a -> acc @ [print_ast a]) [] a_list))
+        (print_ast b)
+        (print_ast c)
+    | LetRec (a_list, b, c) ->
+      sprintf "LetRec ([%s], %s, %s)"
+        (String.concat "; " (List.fold_left (fun acc a -> acc @ [print_ast a]) [] a_list))
+        (print_ast b)
+        (print_ast c)
+    | Apply (a, b_list) ->
+      sprintf "Apply (%s [%s])"
+        (print_ast a)
+        (String.concat "; " (List.fold_left (fun acc b -> acc @ [print_ast b]) [] b_list))
   in
   let range_s =
     let print_pos pos =

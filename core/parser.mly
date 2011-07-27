@@ -27,9 +27,15 @@ let symbol_range () = {
   fr_end   = Parsing.symbol_end_pos ();
 }
 
-(* Constructs an untyped expression corresponding to the current
- * parser "symbol". *)
-let untyped_expr_here expr = untyped_expr expr (symbol_range ())
+(* Gets the file range corresponding to the specified matching symbol on the
+ * right-hand side of the current rule (indexed from 1). *)
+let rhs_range n = {
+  fr_start = Parsing.rhs_start_pos n;
+  fr_end   = Parsing.rhs_end_pos n;
+}
+
+let untyped_expr_sym expr   = untyped_expr expr (symbol_range ())
+let untyped_expr_rhs n expr = untyped_expr expr (rhs_range n)
 
 %}
 
@@ -59,6 +65,7 @@ let untyped_expr_here expr = untyped_expr expr (symbol_range ())
 %token SEMI
 %token <string> IDENT
 %token EOF
+%token DISAMBIGUATION
 
 
 /* Precedence rules. */
@@ -77,64 +84,59 @@ let untyped_expr_here expr = untyped_expr expr (symbol_range ())
 
 /* The entry point must be an expression of the given type. */
 
-%type <Syntax.t> exp
-%start exp
+%type <Syntax.t> expr
+%start expr
 
 %%
 
 /* Grammar definitions follow. */
 
-exp:
-  | LPAREN exp RPAREN
-    { $2 }
-  | LPAREN RPAREN
-    { untyped_expr_here Unit }
-  | BOOL
-    { untyped_expr_here (Bool ($1)) }
-  | INT
-    { untyped_expr_here (Int ($1)) }
-  | IDENT
-    { untyped_expr_here (Var ($1)) }
-  | NOT exp
-    { untyped_expr_here (Not ($2)) }
-  | MINUS exp
+seq_expr:
+  | expr
+    { $1 }
+  | expr SEMI seq_expr
+    { (* Note: annotating the imaginary 'let' variable with the file
+         position of the first expression should cause a reasonable
+         error message if unification fails *)
+      let fake_var = untyped_expr_rhs 1 (Var (Id.mktmp ())) in
+      untyped_expr_sym (Let ([fake_var], $1, $3)) }
+
+expr:
+  | simple_expr
+    { $1 }
+  | simple_expr simple_expr_list
+    { untyped_expr_sym (Apply ($1, List.rev $2)) }
+  | LET ident_list EQ expr IN seq_expr
+    { untyped_expr_sym (Let (List.rev $2, $4, $6)) }
+  | LET REC ident_list EQ expr IN seq_expr
+    { untyped_expr_sym (LetRec (List.rev $3, $5, $7)) }
+  | NOT expr
+    { untyped_expr_sym (Not ($2)) }
+  | MINUS expr
     %prec prec_unary_minus
-    { untyped_expr_here (Neg ($2)) }
-  | exp PLUS exp
-    { untyped_expr_here (Add ($1, $3)) }
-  | exp MINUS exp
-    { untyped_expr_here (Sub ($1, $3)) }
-  | exp STAR exp
-    { untyped_expr_here (Mul ($1, $3)) }
-  | exp SLASH exp
-    { untyped_expr_here (Div ($1, $3)) }
-  | exp MOD exp
-    { untyped_expr_here (Mod ($1, $3)) }
-  | exp EQ exp
-    { untyped_expr_here (Eq ($1, $3)) }
-  | exp NEQ exp
-    { untyped_expr_here (Neq ($1, $3)) }
-  | exp LEQ exp
-    { untyped_expr_here (Leq ($1, $3)) }
-  | exp GEQ exp
-    { untyped_expr_here (Geq ($1, $3)) }
-  | exp LT exp
-    { untyped_expr_here (Less ($1, $3)) }
-  | exp GT exp
-    { untyped_expr_here (Greater ($1, $3)) }
-  | IF exp THEN exp ELSE exp
-    { untyped_expr_here (If ($2, $4, $6)) }
-  | LET IDENT EQ exp IN exp
-    /* Note: t.type_annot is associated with the IDENT in this case? */
-    { untyped_expr_here (Let ($2, $4, $6)) }
-  | LET fundef IN exp
-    /* Note: t.type_annot is associated with the fun_name in this case? */
-    { untyped_expr_here (LetFun ($2, $4)) }
-  | LET REC fundef IN exp
-    /* Note: t.type_annot is associated with the fun_name in this case? */
-    { untyped_expr_here (LetRec ($3, $5)) }
-  | exp SEMI exp
-    { untyped_expr_here (Let (Id.mktmp (), $1, $3)) }
+    { untyped_expr_sym (Neg ($2)) }
+  | expr PLUS expr
+    { untyped_expr_sym (Add ($1, $3)) }
+  | expr MINUS expr
+    { untyped_expr_sym (Sub ($1, $3)) }
+  | expr STAR expr
+    { untyped_expr_sym (Mul ($1, $3)) }
+  | expr SLASH expr
+    { untyped_expr_sym (Div ($1, $3)) }
+  | expr MOD expr
+    { untyped_expr_sym (Mod ($1, $3)) }
+  | expr EQ expr
+    { untyped_expr_sym (Eq ($1, $3)) }
+  | expr NEQ expr
+    { untyped_expr_sym (Neq ($1, $3)) }
+  | expr LEQ expr
+    { untyped_expr_sym (Leq ($1, $3)) }
+  | expr GEQ expr
+    { untyped_expr_sym (Geq ($1, $3)) }
+  | expr LT expr
+    { untyped_expr_sym (Less ($1, $3)) }
+  | expr GT expr
+    { untyped_expr_sym (Greater ($1, $3)) }
   | error
     { let spos = Parsing.symbol_start_pos () in
       let epos = Parsing.symbol_end_pos () in
@@ -143,17 +145,32 @@ exp:
       failwith (Printf.sprintf 
         "Parse error, line %u char %u through line %u char %u."
         spos.Lexing.pos_lnum sofs epos.Lexing.pos_lnum eofs) }
-        
-fundef:
-  | IDENT funargs EQ exp
-    { let untyped_fun_args = List.map (fun arg -> {fa_name = arg; fa_annot = None}) $2 in
-      {fun_name = $1; fun_args = untyped_fun_args; fun_body = $4} }
-    
-funargs:
-  | IDENT funargs
-    { $1 :: $2 }
+
+
+simple_expr:
+  | LPAREN seq_expr RPAREN
+    { $2 }
+  | LPAREN RPAREN
+    { untyped_expr_sym Unit }
+  | BOOL
+    { untyped_expr_sym (Bool ($1)) }
+  | INT
+    { untyped_expr_sym (Int ($1)) }
   | IDENT
+    { untyped_expr_sym (Var ($1)) }
+        
+
+simple_expr_list:
+  | simple_expr_list simple_expr
+    { $2 :: $1 }
+  | simple_expr
     { [$1] }
-  
+
+
+ident_list:
+  | ident_list IDENT
+    { (untyped_expr_rhs 1 (Var ($2))) :: $1 }
+  | IDENT
+    { [untyped_expr_sym (Var ($1))] }
 
 
