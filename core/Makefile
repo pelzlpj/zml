@@ -1,5 +1,5 @@
 
-SRCS := id.ml type.ml syntax.ml parser.ml lexer.ml main.ml
+SRCS := id.ml type.ml syntax.ml typing.ml parser.ml lexer.ml main.ml
 
 OBJS := $(SRCS:.ml=.cmx)
 

@@ -25,17 +25,17 @@ and expr_t =
   | Geq of t * t
   | Less of t * t
   | Greater of t * t
-  | Not of t
-  | Neg of t
   | Add of t * t
   | Sub of t * t
   | Mul of t * t
   | Div of t * t
   | Mod of t * t
+  | Not of t
+  | Neg of t
   | If of t * t * t
   | Var of string
-  | Let of (t list) * t * t     (* newly bound variables do not recur in the "equals" expression *)
-  | LetRec of (t list) * t * t  (* newly bound variables may recur in the "equals" expression *)
+  | Let of t * (t list) * t * t     (* newly bound variable does not recur in the "equals" expression *)
+  | LetRec of t * (t list) * t * t  (* newly bound variable may recur in the "equals" expression *)
   | Apply of t * (t list)
 
 
@@ -89,13 +89,15 @@ let rec print_ast (ast : t) =
       print_binary "Mod" a b
     | If (a, b, c) ->
       sprintf "If (%s, %s, %s)" (print_ast a) (print_ast b) (print_ast c)
-    | Let (a_list, b, c) ->
-      sprintf "Let ([%s], %s, %s)"
+    | Let (a, a_list, b, c) ->
+      sprintf "Let (%s, [%s], %s, %s)"
+        (print_ast a)
         (String.concat "; " (List.fold_left (fun acc a -> acc @ [print_ast a]) [] a_list))
         (print_ast b)
         (print_ast c)
-    | LetRec (a_list, b, c) ->
-      sprintf "LetRec ([%s], %s, %s)"
+    | LetRec (a, a_list, b, c) ->
+      sprintf "LetRec (%s, [%s], %s, %s)"
+        (print_ast a)
         (String.concat "; " (List.fold_left (fun acc a -> acc @ [print_ast a]) [] a_list))
         (print_ast b)
         (print_ast c)
