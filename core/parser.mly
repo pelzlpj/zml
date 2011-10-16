@@ -95,11 +95,7 @@ seq_expr:
   | expr
     { $1 }
   | expr SEMI seq_expr
-    { (* Note: annotating the imaginary 'let' variable with the file
-         position of the first expression should cause a reasonable
-         error message if unification fails *)
-      let fake_var = untyped_expr_rhs 1 (Var (Id.mktmp ())) in
-      untyped_expr_sym (Let (fake_var, [], $1, $3)) }
+    { untyped_expr_sym (Let (Id.mktmp (), [], $1, $3)) }
 
 expr:
   | simple_expr
@@ -107,11 +103,9 @@ expr:
   | simple_expr simple_expr_list
     { untyped_expr_sym (Apply ($1, List.rev $2)) }
   | LET IDENT ident_list EQ expr IN seq_expr
-    { let binding = untyped_expr_rhs 2 (Var $2) in
-      untyped_expr_sym (Let (binding, List.rev $3, $5, $7)) }
+    { untyped_expr_sym (Let ($2, List.rev $3, $5, $7)) }
   | LET REC IDENT ident_list EQ expr IN seq_expr
-    { let binding = untyped_expr_rhs 3 (Var $3) in
-      untyped_expr_sym (LetRec (binding, List.rev $4, $6, $8)) }
+    { untyped_expr_sym (LetRec ($3, List.rev $4, $6, $8)) }
   | NOT expr
     { untyped_expr_sym (Not ($2)) }
   | MINUS expr
@@ -171,7 +165,7 @@ simple_expr_list:
 
 ident_list:
   | ident_list IDENT
-    { (untyped_expr_rhs 2 (Var ($2))) :: $1 }
+    { $2 :: $1 }
   | /* empty */
     { [] }
 

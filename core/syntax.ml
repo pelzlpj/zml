@@ -7,11 +7,15 @@ type file_range_t = {
   fr_end   : Lexing.position;   (** Ending position of a range of characters *)
 }
 
-type t = {
-(** Type [t] represents a node in the AST, as determined by the first pass of parsing the source file. *)
-  expr       : expr_t;          (** Expression parsed at this node *)
+type parser_meta_t = {
   range      : file_range_t;    (** Location in file where expression is found *)
   type_annot : Type.t option;   (** Type annotation for this expression, if provided *)
+}
+
+type t = {
+(** Type [t] represents a node in the AST, as determined by the first pass of parsing the source file. *)
+  expr        : expr_t;         (** Expression parsed at this node *)
+  parser_info : parser_meta_t   (** Additional metadata recorded by the parser *)
 }
 
 and expr_t =
@@ -34,16 +38,15 @@ and expr_t =
   | Neg of t
   | If of t * t * t
   | Var of string
-  | Let of t * (t list) * t * t     (* newly bound variable does not recur in the "equals" expression *)
-  | LetRec of t * (t list) * t * t  (* newly bound variable may recur in the "equals" expression *)
+  | Let of string * (string list) * t * t     (* newly bound variable does not recur in the "equals" expression *)
+  | LetRec of string * (string list) * t * t  (* newly bound variable may recur in the "equals" expression *)
   | Apply of t * (t list)
 
 
 (* Construct an AST node with no type information *)
 let untyped_expr expr range = {
-  expr  = expr;
-  range = range;
-  type_annot = None;
+  expr;
+  parser_info = {range; type_annot = None}
 }
 
 
@@ -91,14 +94,14 @@ let rec print_ast (ast : t) =
       sprintf "If (%s, %s, %s)" (print_ast a) (print_ast b) (print_ast c)
     | Let (a, a_list, b, c) ->
       sprintf "Let (%s, [%s], %s, %s)"
-        (print_ast a)
-        (String.concat "; " (List.fold_left (fun acc a -> acc @ [print_ast a]) [] a_list))
+        a
+        (String.concat "; " (List.fold_left (fun acc a -> acc @ [a]) [] a_list))
         (print_ast b)
         (print_ast c)
     | LetRec (a, a_list, b, c) ->
       sprintf "LetRec (%s, [%s], %s, %s)"
-        (print_ast a)
-        (String.concat "; " (List.fold_left (fun acc a -> acc @ [print_ast a]) [] a_list))
+        a
+        (String.concat "; " (List.fold_left (fun acc a -> acc @ [a]) [] a_list))
         (print_ast b)
         (print_ast c)
     | Apply (a, b_list) ->
@@ -110,7 +113,9 @@ let rec print_ast (ast : t) =
     let print_pos pos =
       sprintf "%d:%d" pos.Lexing.pos_lnum (pos.Lexing.pos_cnum - pos.Lexing.pos_bol)
     in
-    sprintf "%s-%s" (print_pos ast.range.fr_start) (print_pos ast.range.fr_end)
+    sprintf "%s-%s"
+      (print_pos ast.parser_info.range.fr_start)
+      (print_pos ast.parser_info.range.fr_end)
   in
   sprintf "(%s >> %s)" expr_s range_s
 
