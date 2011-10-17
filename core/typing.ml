@@ -2,8 +2,12 @@
  * Damas and Milner. *)
 
 
+open Typing_unify
+
+exception Unbound_value of string * Syntax.parser_meta_t
+
+
 module SMap = Map.Make(String)
-module SSet = Set.Make(String)
 
 
 (* Exceptionless variant of Map.find. *)
@@ -44,26 +48,6 @@ and bind_t = {
   bind_name : string;
   bind_type : Type.t
 }
-
-
-let typevar_count = ref 0
-
-let reset_type_vars () =
-  typevar_count := 0
-
-
-(* Generates a fresh type variable, using the following pattern:
- * a, b, ..., z, a1, a2, ... *)
-let make_type_var () : Type.t =
-  let num_chars = 26 in
-  let string_rep =
-    if !typevar_count < num_chars then
-      String.make 1 (Char.chr (!typevar_count + (Char.code 'a')))
-    else
-      Printf.sprintf "a%d" (!typevar_count + 1 - num_chars)
-  in
-  let () = incr typevar_count in
-  Type.Var string_rep
 
 
 (* Recursively annotate all subexpressions with types.
@@ -107,13 +91,13 @@ let rec annotate (env : Type.t SMap.t) (parsed_expr : Syntax.t) : aexpr_t =
       {expr = Neg (annotate env a); inferred_type = Type.Int; parser_info}
   | Syntax.If (a, b, c) -> {
       expr          = If (annotate env a, annotate env b, annotate env c);
-      inferred_type = make_type_var ();
+      inferred_type = Type.make_type_var ();
       parser_info
     }
   | Syntax.Var var_name ->
       let var_type = match smap_find var_name env with
         | Some known_type -> known_type
-        | None            -> make_type_var ()
+        | None            -> raise (Unbound_value (var_name, parser_info))
       in {
         expr          = Var var_name;
         inferred_type = var_type;
@@ -121,17 +105,17 @@ let rec annotate (env : Type.t SMap.t) (parsed_expr : Syntax.t) : aexpr_t =
       }
   | Syntax.Let (a, args, b, c) -> {
       expr          = annotate_let false env a args b c;
-      inferred_type = make_type_var ();
+      inferred_type = Type.make_type_var ();
       parser_info
     }
   | Syntax.LetRec (a, args, b, c) -> {
       expr = annotate_let true env a args b c;
-      inferred_type = make_type_var ();
+      inferred_type = Type.make_type_var ();
       parser_info
     }
   | Syntax.Apply (a, args) -> {
       expr          = Apply (annotate env a, List.map (annotate env) args);
-      inferred_type = make_type_var ();
+      inferred_type = Type.make_type_var ();
       parser_info
     }
 
@@ -140,7 +124,7 @@ let rec annotate (env : Type.t SMap.t) (parsed_expr : Syntax.t) : aexpr_t =
 and annotate_let is_rec env binding args eq_expr in_expr =
   (* The first element in the list is the newly-bound variable, which is added to
    * the environment of the "in" clause (shadowing any previous binding). *)
-  let fun_binding = {bind_name = binding; bind_type = make_type_var () } in
+  let fun_binding = {bind_name = binding; bind_type = Type.make_type_var () } in
   let in_env = SMap.add fun_binding.bind_name fun_binding.bind_type env in
   (* If this is a "let rec" form, then the binding may recur in the "equals"
    * clause, so the binding must be added to the eq_env. *)
@@ -148,7 +132,7 @@ and annotate_let is_rec env binding args eq_expr in_expr =
   (* All other elements in the list are function arguments, which are added to the
    * environment of the "equals" clause (shadowing any previous binding). *)
   let arg_bindings = List.map
-    (fun arg_name -> {bind_name = arg_name; bind_type = make_type_var ()})
+    (fun arg_name -> {bind_name = arg_name; bind_type = Type.make_type_var ()})
     args
   in
   let eq_env = List.fold_left
@@ -158,17 +142,6 @@ and annotate_let is_rec env binding args eq_expr in_expr =
   in 
   Let (fun_binding, arg_bindings, annotate eq_env eq_expr, annotate in_env in_expr)
 
-
-
-type constraint_t = {
-  (* The type of a constraint: the term on the left must unify with
-   * the type on the right.  [error_info] provides the positions from the
-   * source file which should be associated with this constraint for
-   * the purpose of generating error messages. *)
-  left_type  : Type.t;
-  right_type : Type.t;
-  error_info : Syntax.parser_meta_t
-}
 
 
 (* Given a list of type-annotated expressions, generate the list of type
@@ -188,7 +161,7 @@ let rec compute_constraints (acc : constraint_t list) (aexprs : aexpr_t list) : 
       let constr = {
         left_type  = a.inferred_type;
         right_type = b.inferred_type;
-        error_info = b.parser_info
+        error_info = a.parser_info
       } in
       compute_constraints (constr :: acc) (a :: b :: tail)
   | {expr = Leq (a, b); _}     :: tail
@@ -309,4 +282,54 @@ let print_constraints (constraints : constraint_t list) =
     (fun constr -> Printf.printf "%s == %s\n"
       (Type.string_of_type constr.left_type) (Type.string_of_type constr.right_type))
     constraints
+
+
+let rec apply_substs (substs : Typing_unify.subst_t list) (aexpr : aexpr_t) =
+	(* Apply substitutions on an annotated expression *)
+  let sub      = apply_substs substs in
+	(* Apply substitutions on a type *)
+  let sub_type = Typing_unify.apply_substitutions substs in
+	let aexpr = {aexpr with inferred_type = sub_type aexpr.inferred_type} in
+  match aexpr with
+  | {expr = Unit; _}
+  | {expr = Bool _; _}
+  | {expr = Int _; _}
+	| {expr = Var _; _} -> aexpr
+
+  | {expr = Eq (a, b); _}      -> {aexpr with expr = Eq      (sub a, sub b)}
+  | {expr = Neq (a, b); _}     -> {aexpr with expr = Neq     (sub a, sub b)}
+  | {expr = Leq (a, b); _}     -> {aexpr with expr = Leq     (sub a, sub b)}
+  | {expr = Geq (a, b); _}     -> {aexpr with expr = Geq     (sub a, sub b)}
+  | {expr = Less (a, b); _}    -> {aexpr with expr = Less    (sub a, sub b)}
+  | {expr = Greater (a, b); _} -> {aexpr with expr = Greater (sub a, sub b)}
+  | {expr = Add (a, b); _}     -> {aexpr with expr = Add     (sub a, sub b)}
+  | {expr = Sub (a, b); _}     -> {aexpr with expr = Sub     (sub a, sub b)}
+  | {expr = Mul (a, b); _}     -> {aexpr with expr = Mul     (sub a, sub b)}
+  | {expr = Div (a, b); _}     -> {aexpr with expr = Div     (sub a, sub b)}
+  | {expr = Mod (a, b); _}     -> {aexpr with expr = Mod     (sub a, sub b)}
+
+	| {expr = Not a; _} -> {aexpr with expr = Not (sub a)}
+	| {expr = Neg a; _} -> {aexpr with expr = Neg (sub a)}
+
+	| {expr = If (a, b, c); _} -> {aexpr with expr = If (sub a, sub b, sub c)}
+
+	| {expr = Let (fun_binding, arg_bindings, eq_expr, in_expr); _} -> {aexpr with
+			expr = Let (
+				{fun_binding with bind_type = sub_type fun_binding.bind_type},
+				List.map (fun arg -> {arg with bind_type = sub_type arg.bind_type}) arg_bindings,
+				sub eq_expr,
+				sub in_expr)
+		}
+
+	| {expr = Apply (a, b_list); _} -> {aexpr with expr = Apply (sub a, List.map sub b_list)}
+
+
+
+(* Determine the types of all expressions using a Damas-Milner algorithm. *)
+let infer (parsed_expr : Syntax.t) : aexpr_t =
+  let annotated_ast = annotate SMap.empty parsed_expr in
+  let type_constraints = compute_constraints [] [annotated_ast] in
+  let substitutions = Typing_unify.unify type_constraints in
+	apply_substs substitutions annotated_ast
+
 

@@ -6,10 +6,24 @@ let parse filename =
     let () = close_in in_ch in
     x
   in
-  (* print_endline (Syntax.print_ast ast) *)
-  let typed_ast = Typing.annotate Typing.SMap.empty ast in
-  let constraints = Typing.compute_constraints [] [typed_ast] in
-  Typing.print_constraints constraints
+  try
+    let _ (* typed_ast *)= Typing.infer ast in
+    ()
+  with Typing_unify.Unification_failure constr ->
+    let error_range = constr.Typing_unify.error_info.Syntax.range in
+    let () = Printf.printf "Typing error in range %d:%d-%d:%d\n"
+      error_range.Syntax.fr_start.Lexing.pos_lnum
+      (error_range.Syntax.fr_start.Lexing.pos_cnum -
+        error_range.Syntax.fr_start.Lexing.pos_bol + 1)
+      error_range.Syntax.fr_end.Lexing.pos_lnum
+      (error_range.Syntax.fr_end.Lexing.pos_cnum -
+        error_range.Syntax.fr_end.Lexing.pos_bol + 1)
+    in
+    let () = Printf.printf "This expression has type\n    %s\n"
+      (Type.string_of_type (Type.local_rename_typevars constr.Typing_unify.left_type))
+    in
+    Printf.printf "An expression was expected of type\n    %s\n"
+      (Type.string_of_type (Type.local_rename_typevars constr.Typing_unify.right_type))
 
 
 let _ = parse Sys.argv.(1)
