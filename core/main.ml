@@ -19,11 +19,14 @@ let parse filename =
       (error_range.Syntax.fr_end.Lexing.pos_cnum -
         error_range.Syntax.fr_end.Lexing.pos_bol + 1)
     in
-    let () = Printf.printf "This expression has type\n    %s\n"
-      (Type.string_of_type (Type.local_rename_typevars constr.Typing_unify.left_type))
+    let (ctx, left_type) =
+      Type.local_rename_typevars Type.empty_rename_ctx constr.Typing_unify.left_type
     in
-    Printf.printf "An expression was expected of type\n    %s\n"
-      (Type.string_of_type (Type.local_rename_typevars constr.Typing_unify.right_type))
+    let (ctx, right_type) =
+      Type.local_rename_typevars ctx constr.Typing_unify.right_type
+    in
+    let () = Printf.printf "This expression has type\n    %s\n" (Type.string_of_type left_type) in
+    Printf.printf "An expression was expected of type\n    %s\n" (Type.string_of_type right_type)
 
 
 let _ = parse Sys.argv.(1)

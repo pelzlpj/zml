@@ -16,7 +16,7 @@ let smap_find x m =
   with Not_found -> None
 
 
-type t =
+type expr_t =
   | Unit                                              (* Unit literal *)
   | Bool of bool                                      (* Boolean literal *)
   | Int of int                                        (* Integer literal *)
@@ -39,7 +39,7 @@ type t =
   | Apply of aexpr_t * (aexpr_t list)                 (* Function application *)
 
 and aexpr_t = {
-  expr          : t;                     (* Expression *)
+  expr          : expr_t;                (* Expression *)
   inferred_type : Type.t;                (* Inferred type of expression (possibly a typevar) *)
   parser_info   : Syntax.parser_meta_t   (* Additional info from parser regarding this expr *)
 }

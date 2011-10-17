@@ -81,6 +81,10 @@ let rec unify_one (constr : constraint_t) : subst_t list =
       with Unification_failure _ ->
         (* This will provide a more meaningful error message; the reference to
          * the source file spans the entire arrow expression. *)
+        (* FIXME: this isn't a great solution, because it doesn't show the user
+         * all the type refinements which were successfully determined by the
+         * call to [unify] before the exception was thrown.  So the user may see
+         * a very incomplete type like 'a -> 'b -> 'c -> ... *)
         raise (Unification_failure constr)
       end
 

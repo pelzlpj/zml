@@ -50,31 +50,38 @@ let rec string_of_type typ =
   | Arrow (a, b) -> Printf.sprintf "%s -> %s" (string_of_type a) (string_of_type b)
 
 
-let remap_typevar (last_tvar : tvar_t) (mapping : tvar_t TVMap.t) (tvar : tvar_t) =
+type rename_context_t = {
+  last_tvar : tvar_t;
+  mapping   : tvar_t TVMap.t;
+}
+
+let empty_rename_ctx = {
+  last_tvar = -1;
+  mapping   = TVMap.empty
+}
+
+
+let remap_typevar (ctx : rename_context_t) (tvar : tvar_t) =
   try
-    (last_tvar, mapping, TVMap.find tvar mapping)
+    (ctx, TVMap.find tvar ctx.mapping)
   with Not_found ->
-    let new_tvar = last_tvar + 1 in
-    let mapping = TVMap.add tvar new_tvar mapping in
-    (new_tvar, mapping, new_tvar)
+    let last_tvar = ctx.last_tvar + 1 in
+    let mapping = TVMap.add tvar last_tvar ctx.mapping in
+    ({last_tvar; mapping}, last_tvar)
 
 
 (* Given a type expression as input, rename the type variables so that they use
  * the first N variable names. *)
-let rec local_rename_typevars_aux (last_tvar : tvar_t) (mapping : tvar_t TVMap.t) (x : t) =
+let rec local_rename_typevars (ctx : rename_context_t) (x : t) =
   match x with
   | Unit | Bool | Int ->
-      (last_tvar, mapping, x)
+      (ctx, x)
   | Var a ->
-      let (last_tvar, mapping, a) = remap_typevar last_tvar mapping a in
-      (last_tvar, mapping, Var a)
+      let (ctx, a) = remap_typevar ctx a in
+      (ctx, Var a)
   | Arrow (a, b) ->
-      let (last_tvar, mapping, a) = local_rename_typevars_aux last_tvar mapping a in
-      let (last_tvar, mapping, b) = local_rename_typevars_aux last_tvar mapping b in
-      (last_tvar, mapping, Arrow (a, b))
-
-let local_rename_typevars (x : t) : t =
-  let (_, _, x') = local_rename_typevars_aux (-1) TVMap.empty x in
-  x'
+      let (ctx, a) = local_rename_typevars ctx a in
+      let (ctx, b) = local_rename_typevars ctx b in
+      (ctx, Arrow (a, b))
 
 
