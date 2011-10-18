@@ -47,7 +47,11 @@ let rec string_of_type typ =
   | Bool         -> "bool"
   | Int          -> "int"
   | Var i        -> string_of_typevar_index i
-  | Arrow (a, b) -> Printf.sprintf "%s -> %s" (string_of_type a) (string_of_type b)
+  | Arrow ((Arrow _ as a), b) ->
+     (* This case occurs in a higher-order function *)
+     Printf.sprintf "(%s) -> %s" (string_of_type a) (string_of_type b)
+  | Arrow (a, b) ->
+     Printf.sprintf "%s -> %s" (string_of_type a) (string_of_type b)
 
 
 type rename_context_t = {
