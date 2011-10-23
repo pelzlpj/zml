@@ -106,6 +106,8 @@ expr:
     { untyped_expr_sym (Let ($2, List.rev $3, $5, $7)) }
   | LET REC IDENT ident_list EQ expr IN seq_expr
     { untyped_expr_sym (LetRec ($3, List.rev $4, $6, $8)) }
+  | IF expr THEN expr ELSE expr
+    { untyped_expr_sym (If ($2, $4, $6)) }
   | NOT expr
     { untyped_expr_sym (Not ($2)) }
   | MINUS expr

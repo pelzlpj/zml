@@ -7,7 +7,10 @@ let parse filename =
     x
   in
   try
-    let _ (* typed_ast *)= Typing.infer ast in
+    let typed_ast = Typing.infer ast in
+    let normal = Normal.normalize typed_ast in
+    let s = Normal.string_of_normal normal in
+    let () = print_endline s in
     ()
   with Typing_unify.Unification_failure constr ->
     let error_range = constr.Typing_unify.error_info.Syntax.range in

@@ -49,9 +49,11 @@ let apply_substitutions (substs : subst_t list) (x : Type.t) : Type.t =
 
 (* Unify a single constraint *)
 let rec unify_one (constr : constraint_t) : subst_t list =
+  (*
   Printf.printf "unify_one:\n    %s\n    %s\n"
     (Type.string_of_type constr.left_type)
     (Type.string_of_type constr.right_type);
+  *)
   match (constr.left_type, constr.right_type) with
   | ((Type.Unit as x), y)
   | ((Type.Bool as x), y)

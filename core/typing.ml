@@ -6,8 +6,12 @@ open Typing_unify
 
 exception Unbound_value of string * Syntax.parser_meta_t
 
+exception Duplicate_argument_inner of string
+exception Duplicate_argument of string * Syntax.parser_meta_t
+
 
 module SMap = Map.Make(String)
+module SSet = Set.Make(String)
 
 
 (* Exceptionless variant of Map.find. *)
@@ -17,26 +21,27 @@ let smap_find x m =
 
 
 type expr_t =
-  | Unit                                              (* Unit literal *)
-  | Bool of bool                                      (* Boolean literal *)
-  | Int of int                                        (* Integer literal *)
-  | Eq of aexpr_t * aexpr_t                           (* Polymorphic equality *)
-  | Neq of aexpr_t * aexpr_t                          (* Polymorphic inequality *)
-  | Leq of aexpr_t * aexpr_t                          (* Polymorphic "less than or equal to" *)
-  | Geq of aexpr_t * aexpr_t                          (* Polymorphic "greater than or equal to" *)
-  | Less of aexpr_t * aexpr_t                         (* Polymorphic "less than" *)
-  | Greater of aexpr_t * aexpr_t                      (* Polymorphic "greater than" *)
-  | Add of aexpr_t * aexpr_t                          (* Integer addition *)
-  | Sub of aexpr_t * aexpr_t                          (* Integer subtraction *)
-  | Mul of aexpr_t * aexpr_t                          (* Integer multiplication *)
-  | Div of aexpr_t * aexpr_t                          (* Integer division *)
-  | Mod of aexpr_t * aexpr_t                          (* Integer modulus *)
-  | Not of aexpr_t                                    (* Boolean negation *)
-  | Neg of aexpr_t                                    (* Integer negation *)
-  | If of aexpr_t * aexpr_t * aexpr_t                 (* Conditional expression *)
-  | Var of string                                     (* Bound variable *)
-  | Let of bind_t * (bind_t list) * aexpr_t * aexpr_t (* Let expression *)
-  | Apply of aexpr_t * (aexpr_t list)                 (* Function application *)
+  | Unit                                                 (* Unit literal *)
+  | Bool of bool                                         (* Boolean literal *)
+  | Int of int                                           (* Integer literal *)
+  | Eq of aexpr_t * aexpr_t                              (* Polymorphic equality *)
+  | Neq of aexpr_t * aexpr_t                             (* Polymorphic inequality *)
+  | Leq of aexpr_t * aexpr_t                             (* Polymorphic "less than or equal to" *)
+  | Geq of aexpr_t * aexpr_t                             (* Polymorphic "greater than or equal to" *)
+  | Less of aexpr_t * aexpr_t                            (* Polymorphic "less than" *)
+  | Greater of aexpr_t * aexpr_t                         (* Polymorphic "greater than" *)
+  | Add of aexpr_t * aexpr_t                             (* Integer addition *)
+  | Sub of aexpr_t * aexpr_t                             (* Integer subtraction *)
+  | Mul of aexpr_t * aexpr_t                             (* Integer multiplication *)
+  | Div of aexpr_t * aexpr_t                             (* Integer division *)
+  | Mod of aexpr_t * aexpr_t                             (* Integer modulus *)
+  | Not of aexpr_t                                       (* Boolean negation *)
+  | Neg of aexpr_t                                       (* Integer negation *)
+  | If of aexpr_t * aexpr_t * aexpr_t                    (* Conditional expression *)
+  | Var of string                                        (* Bound variable *)
+  | Let of bind_t * (bind_t list) * aexpr_t * aexpr_t    (* Let expression *)
+  | LetRec of bind_t * (bind_t list) * aexpr_t * aexpr_t (* Let Rec expression *)
+  | Apply of aexpr_t * (aexpr_t list)                    (* Function application *)
 
 and aexpr_t = {
   expr          : expr_t;                (* Expression *)
@@ -103,16 +108,22 @@ let rec annotate (env : Type.t SMap.t) (parsed_expr : Syntax.t) : aexpr_t =
         inferred_type = var_type;
         parser_info
       }
-  | Syntax.Let (a, args, b, c) -> {
-      expr          = annotate_let false env a args b c;
-      inferred_type = Type.make_type_var ();
-      parser_info
-    }
-  | Syntax.LetRec (a, args, b, c) -> {
-      expr = annotate_let true env a args b c;
-      inferred_type = Type.make_type_var ();
-      parser_info
-    }
+  | Syntax.Let (a, args, b, c) ->
+      begin try {
+        expr          = annotate_let false env a args b c;
+        inferred_type = Type.make_type_var ();
+        parser_info
+      } with Duplicate_argument_inner arg_name ->
+        raise (Duplicate_argument (arg_name, parser_info))
+      end
+  | Syntax.LetRec (a, args, b, c) ->
+      begin try {
+        expr = annotate_let true env a args b c;
+        inferred_type = Type.make_type_var ();
+        parser_info
+      } with Duplicate_argument_inner arg_name ->
+        raise (Duplicate_argument (arg_name, parser_info))
+      end
   | Syntax.Apply (a, args) -> {
       expr          = Apply (annotate env a, List.map (annotate env) args);
       inferred_type = Type.make_type_var ();
@@ -130,7 +141,17 @@ and annotate_let is_rec env binding args eq_expr in_expr =
    * clause, so the binding must be added to the eq_env. *)
   let env = if is_rec then in_env else env in
   (* All other elements in the list are function arguments, which are added to the
-   * environment of the "equals" clause (shadowing any previous binding). *)
+   * environment of the "equals" clause (shadowing any previous binding).  But
+   * first we run a quick check for duplicate argument names... *)
+  let _ = List.fold_left
+    (fun acc arg_name ->
+      if SSet.mem arg_name acc then
+        raise (Duplicate_argument_inner arg_name)
+      else
+        SSet.add arg_name acc)
+    SSet.empty
+    args
+  in
   let arg_bindings = List.map
     (fun arg_name -> {bind_name = arg_name; bind_type = Type.make_type_var ()})
     args
@@ -140,7 +161,10 @@ and annotate_let is_rec env binding args eq_expr in_expr =
     env
     arg_bindings
   in 
-  Let (fun_binding, arg_bindings, annotate eq_env eq_expr, annotate in_env in_expr)
+  if is_rec then
+    LetRec (fun_binding, arg_bindings, annotate eq_env eq_expr, annotate in_env in_expr)
+  else
+    Let    (fun_binding, arg_bindings, annotate eq_env eq_expr, annotate in_env in_expr)
 
 
 
@@ -235,7 +259,8 @@ let rec compute_constraints (acc : constraint_t list) (aexprs : aexpr_t list) : 
       } in
       compute_constraints (cond_constr :: true_constr :: false_constr :: acc)
         (cond :: true_expr :: false_expr :: tail)
-  | {expr = Let (fun_binding, arg_bindings, eq_expr, in_expr); _} as ae :: tail ->
+  | ({expr = Let    (fun_binding, arg_bindings, eq_expr, in_expr); _} as ae) :: tail
+  | ({expr = LetRec (fun_binding, arg_bindings, eq_expr, in_expr); _} as ae) :: tail ->
       (* When annotating the expression tree we  plugged in a dummy typevar as the
        * inferred type of this expression, so now we need to constrain that typevar to
        * match the type of in_expr. *)
@@ -320,6 +345,13 @@ let rec apply_substs (substs : Typing_unify.subst_t list) (aexpr : aexpr_t) =
 				sub eq_expr,
 				sub in_expr)
 		}
+	| {expr = LetRec (fun_binding, arg_bindings, eq_expr, in_expr); _} -> {aexpr with
+			expr = LetRec (
+				{fun_binding with bind_type = sub_type fun_binding.bind_type},
+				List.map (fun arg -> {arg with bind_type = sub_type arg.bind_type}) arg_bindings,
+				sub eq_expr,
+				sub in_expr)
+		}
 
 	| {expr = Apply (a, b_list); _} -> {aexpr with expr = Apply (sub a, List.map sub b_list)}
 
@@ -327,9 +359,10 @@ let rec apply_substs (substs : Typing_unify.subst_t list) (aexpr : aexpr_t) =
 
 (* Determine the types of all expressions using a Damas-Milner algorithm. *)
 let infer (parsed_expr : Syntax.t) : aexpr_t =
+  let () = Type.reset_type_vars () in
   let annotated_ast = annotate SMap.empty parsed_expr in
   let type_constraints = compute_constraints [] [annotated_ast] in
   let substitutions = Typing_unify.unify type_constraints in
-	apply_substs substitutions annotated_ast
+  apply_substs substitutions annotated_ast
 
 

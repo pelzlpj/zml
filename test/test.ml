@@ -1,8 +1,8 @@
 
-let i = 5 in
-let f a b = a + b in
-let g f a b = f a b in
-let k = f 1 3 in
-let kk = g f 1 true in
+let x = 5 / 3 in
+let y =
+  if x > 3 then 10 else 5
+in
 ()
+
 
