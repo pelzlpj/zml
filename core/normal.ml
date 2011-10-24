@@ -1,6 +1,7 @@
 (* Conversion to a normalized form.  The following operations are applied:
  *
- *    * Bound variables are renamed using whole-program-unique integer ids.
+ *    * Alpha conversion: bound variables are renamed using
+ *      whole-program-unique integer ids.
  *
  *    * All nested (i.e. intermediate) expressions are bound to temporary
  *      variables via let-binding.
@@ -19,7 +20,6 @@ module SMap = Map.Make(String)
 
 
 type var_t = int
-
 
 type t =
   | Unit                                            (* Unit literal *)
@@ -69,6 +69,8 @@ let rec string_of_normal (ast : t) : string =
 
 
 
+(* This type is used to associate string variable names with the program-unique
+ * var_t variable identifiers. *)
 type rename_context_t = var_t SMap.t
 
 let var_count = ref 0
@@ -126,12 +128,12 @@ and normalize_integer_less renames a b true_val false_val =
 
 (* Normalize a "let" or "let rec" expression. *)
 and normalize_let
-  (renames : rename_context_t)
-  (is_rec : bool)
-  (name : Typing.bind_t)
-  (args : Typing.bind_t list)
-  (eq_expr : Typing.aexpr_t)
-  (in_expr : Typing.aexpr_t) 
+  (renames : rename_context_t)    (* Variable renaming context for the current expression *)
+  (is_rec : bool)                 (* true iff this is a "let rec" form *)
+  (name : Typing.bind_t)          (* Name of the variable being bound *)
+  (args : Typing.bind_t list)     (* Function argument list (possibly empty) *)
+  (eq_expr : Typing.aexpr_t)      (* Expression being bound to a variable *)
+  (in_expr : Typing.aexpr_t)      (* Expression in which the binding is in scope *)
     : t =
   let (in_renames, binding) = free_named_var renames name.Typing.bind_name in
   (* Alloc fresh variables for all function arguments *)
@@ -150,9 +152,10 @@ and normalize_let
   | [] -> Let (binding, eq_norm, in_norm)
   | _  -> LetFun (name.Typing.bind_name, binding, arg_vars, eq_norm, in_norm)
 
+(* Convert a type-annotated syntax tree into the normalized form. *)
 and normalize_aux
-  (renames : rename_context_t)
-  (expr    : Typing.expr_t)
+  (renames : rename_context_t)      (* Variable renaming context for the current expression *)
+  (expr    : Typing.expr_t)         (* Expression to be normalized *)
     : t =
   match expr with
   | Typing.Unit ->
@@ -319,7 +322,39 @@ and normalize_aux
           (fun fun_binding -> Apply (fun_binding, arg_ids)))
 
 
+(* For the sake of readability, flatten nested let-bindings.  For example,
+ *
+ *   let x =
+ *     let y = expr1 in
+ *     let z = expr2 in
+ *     expr3
+ *   in
+ *   expr4
+ *
+ * is transformed to
+ *
+ *   let y = expr1 in
+ *   let z = expr2 in
+ *   let x = expr3 in
+ *   expr4
+ *
+ * All variable ids are program-unique before this transformation is
+ * applied, which makes the operation relatively straightforward. *)
+let rec flatten (expr : t) : t =
+  match expr with
+  | Let (x, Let (y, y_eq, y_in), x_in) ->
+      flatten (Let (y, y_eq, flatten (Let (x, y_in, x_in))))
+  | IfEq (a, b, c, d) ->
+      IfEq (a, b, flatten c, flatten d)
+  | IfLess (a, b, c, d) ->
+      IfLess (a, b, flatten c, flatten d)
+  | LetFun (x_name, x, args, body, use) ->
+      LetFun (x_name, x, args, flatten body, flatten use)
+  | e -> e
+
+
+(* Convert a type-annotated syntax tree into the normalized form. *)
 let normalize (aexpr : Typing.aexpr_t) : t =
   let () = reset_vars () in
-  normalize_aux SMap.empty aexpr.Typing.expr
+  flatten (normalize_aux SMap.empty aexpr.Typing.expr)
 
