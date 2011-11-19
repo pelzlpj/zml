@@ -1,5 +1,6 @@
 
-SRCS := id.ml type.ml syntax.ml typing_unify.ml typing.ml normal.ml parser.ml lexer.ml main.ml
+SRCS := id.ml type.ml syntax.ml typing_unify.ml typing.ml normal.ml function.ml \
+	parser.ml lexer.ml main.ml
 
 OBJS := $(SRCS:.ml=.cmx)
 

@@ -16,10 +16,24 @@
 
 open Printf
 
+
+(* The type of program-unique variable identifiers. *)
+
+module VarID = struct
+  type t = int
+  let compare e1 e2 = if e1 < e2 then -1 else if e1 > e2 then 1 else 0
+  let to_string (x : t) : string = sprintf "x%d" x
+end
+
+type var_t = VarID.t
+
+(* Used in module Function. *)
+module VMap = Map.Make(VarID)
+
+
+(* Used for mapping string variable names to var_t variable ids *)
 module SMap = Map.Make(String)
 
-
-type var_t = int
 
 type t =
   | Unit                                            (* Unit literal *)
@@ -38,34 +52,31 @@ type t =
   | Apply of var_t * (var_t list)                   (* Function application *)
 
 
-let string_of_var_t var =
-  sprintf "x%d" var
-
 let rec string_of_normal (ast : t) : string =
   match ast with
   | Unit -> "()"
   | Int i -> string_of_int i
-  | Add (a, b) -> sprintf "(%s + %s)"  (string_of_var_t a) (string_of_var_t b)
-  | Sub (a, b) -> sprintf "(%s - %s)"  (string_of_var_t a) (string_of_var_t b)
-  | Mul (a, b) -> sprintf "(%s * %s)"  (string_of_var_t a) (string_of_var_t b)
-  | Div (a, b) -> sprintf "(%s / %s)"  (string_of_var_t a) (string_of_var_t b)
-  | Mod (a, b) -> sprintf "(%s %% %s)" (string_of_var_t a) (string_of_var_t b)
-  | Neg a -> sprintf "(- %s)\n" (string_of_var_t a)
+  | Add (a, b) -> sprintf "(%s + %s)"  (VarID.to_string a) (VarID.to_string b)
+  | Sub (a, b) -> sprintf "(%s - %s)"  (VarID.to_string a) (VarID.to_string b)
+  | Mul (a, b) -> sprintf "(%s * %s)"  (VarID.to_string a) (VarID.to_string b)
+  | Div (a, b) -> sprintf "(%s / %s)"  (VarID.to_string a) (VarID.to_string b)
+  | Mod (a, b) -> sprintf "(%s %% %s)" (VarID.to_string a) (VarID.to_string b)
+  | Neg a -> sprintf "(- %s)\n" (VarID.to_string a)
   | IfEq (a, b, c, d) ->
       sprintf "if %s = %s then\n    %s\nelse\n    %s\n"
-      (string_of_var_t a) (string_of_var_t b) (string_of_normal c) (string_of_normal d)
+      (VarID.to_string a) (VarID.to_string b) (string_of_normal c) (string_of_normal d)
   | IfLess (a, b, c, d) ->
       sprintf "if %s < %s then\n    %s\nelse\n    %s\n"
-      (string_of_var_t a) (string_of_var_t b) (string_of_normal c) (string_of_normal d)
-  | Var a -> string_of_var_t a
+      (VarID.to_string a) (VarID.to_string b) (string_of_normal c) (string_of_normal d)
+  | Var a -> VarID.to_string a
   | Let (a, b, c) ->
-      sprintf "let %s = %s in\n%s" (string_of_var_t a) (string_of_normal b) (string_of_normal c)
+      sprintf "let %s = %s in\n%s" (VarID.to_string a) (string_of_normal b) (string_of_normal c)
   | LetFun (name, id, args, def, use) ->
-      sprintf "let %s_%s %s = %s in\n%s" name (string_of_var_t id)
-        (String.concat " " (List.map string_of_var_t args))
+      sprintf "let %s_%s %s = %s in\n%s" name (VarID.to_string id)
+        (String.concat " " (List.map VarID.to_string args))
         (string_of_normal def) (string_of_normal use)
   | Apply (f, args) ->
-      sprintf "apply(%s %s)" (string_of_var_t f) (String.concat " " (List.map string_of_var_t args))
+      sprintf "apply(%s %s)" (VarID.to_string f) (String.concat " " (List.map VarID.to_string args))
 
 
 
@@ -73,10 +84,13 @@ let rec string_of_normal (ast : t) : string =
  * var_t variable identifiers. *)
 type rename_context_t = var_t SMap.t
 
-let var_count = ref 0
+(* This ID will never be assigned; it is reserved for use by [Function.extract_functions]. *)
+let reserved_main_id = 0
+
+let var_count = ref (reserved_main_id + 1)
 
 let reset_vars () =
-  var_count := 0
+  var_count := (reserved_main_id + 1)
 
 (* Get the next free variable id. *)
 let free_var () =
