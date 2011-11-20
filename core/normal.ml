@@ -29,7 +29,7 @@ type var_t = VarID.t
 
 (* Used in module Function. *)
 module VMap = Map.Make(VarID)
-
+module VSet = Set.Make(VarID)
 
 (* Used for mapping string variable names to var_t variable ids *)
 module SMap = Map.Make(String)

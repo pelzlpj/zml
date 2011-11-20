@@ -15,6 +15,7 @@ open Printf
 
 module VarID = Normal.VarID
 module VMap  = Normal.VMap
+module VSet  = Normal.VSet
 type var_t   = Normal.var_t
 
 
@@ -124,7 +125,8 @@ let rec has_free_variables (f_args : var_t list) (f_body : Normal.t) =
   | Normal.Let (a, e1, e2) ->
       (has_free_variables f_args e1) || (has_free_variables (a :: f_args) e2)
   | Normal.LetFun (_, g, g_args, g_body, g_scope_expr) ->
-      (has_free_variables (List.rev_append g_args f_args) g_body) ||
+      (* LetFun is a recursive form, so [g] is bound in the body. *)
+      (has_free_variables (List.rev_append g_args (g :: f_args)) g_body) ||
         (has_free_variables (g :: f_args) g_scope_expr)
   | Normal.Apply (g, g_args) ->
       List.exists
@@ -134,6 +136,7 @@ let rec has_free_variables (f_args : var_t list) (f_body : Normal.t) =
 
 
 let rec extract_functions_aux
+  (recur_ids : VSet.t)        (* function ids which could be referenced recursively in this expression *)
   (normal_expr : Normal.t)    (* expression to process *)
     : expr_t =                (* resulting expression, with functions extracted *)
   match normal_expr with
@@ -148,28 +151,29 @@ let rec extract_functions_aux
   | Normal.Var a      -> Var a
 
   | Normal.IfEq (a, b, e1, e2) ->
-      IfEq (a, b, extract_functions_aux e1, extract_functions_aux e2)
+      IfEq (a, b, extract_functions_aux recur_ids e1, extract_functions_aux recur_ids e2)
   | Normal.IfLess (a, b, e1, e2) ->
-      IfLess (a, b, extract_functions_aux e1, extract_functions_aux e2)
+      IfLess (a, b, extract_functions_aux recur_ids e1, extract_functions_aux recur_ids e2)
   | Normal.Let (a, e1, e2) ->
-      Let (a, extract_functions_aux e1, extract_functions_aux e2)
+      Let (a, extract_functions_aux recur_ids e1, extract_functions_aux recur_ids e2)
 
   | Normal.LetFun (f_name, f_id, f_args, f_body, f_scope_expr) ->
       (* TODO: closure conversion *)
-      let () = assert (not (has_free_variables f_args f_body)) in
-      let body_extracted = extract_functions_aux f_body in
+      let () = assert (not (has_free_variables (f_id :: f_args) f_body)) in
+      let recur_ids = VSet.add f_id recur_ids in
+      let body_extracted = extract_functions_aux recur_ids f_body in
       let () = add_function_def f_id {f_name; f_args; f_body=body_extracted} in
-      extract_functions_aux f_scope_expr
+      extract_functions_aux recur_ids f_scope_expr
   | Normal.Apply (f_id, f_args) ->
       (* TODO: detect known functions versus unknown functions versus closures *)
-      let () = assert (VMap.mem f_id !function_defs) in
+      let () = assert ((VMap.mem f_id !function_defs) || (VSet.mem f_id recur_ids)) in
       Apply (f_id, f_args)
 
 
 (* Rewrite a normalized expression tree as a list of function definitions and an entry point. *)
 let extract_functions (expr : Normal.t) : t =
   let () = reset_function_defs () in
-  let toplevel_expr = extract_functions_aux expr in
+  let toplevel_expr = extract_functions_aux VSet.empty expr in
   (* Construct the program entry point, [zml_main : unit -> unit] *)
   let () = add_function_def Normal.reserved_main_id
     {f_name="zml_main"; f_args=[]; f_body=toplevel_expr}
