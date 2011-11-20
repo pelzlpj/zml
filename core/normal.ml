@@ -358,6 +358,8 @@ let rec flatten (expr : t) : t =
   match expr with
   | Let (x, Let (y, y_eq, y_in), x_in) ->
       flatten (Let (y, y_eq, flatten (Let (x, y_in, x_in))))
+  | Let (x, x_eq, x_in) ->
+      Let (x, flatten x_eq, flatten x_in)
   | IfEq (a, b, c, d) ->
       IfEq (a, b, flatten c, flatten d)
   | IfLess (a, b, c, d) ->
