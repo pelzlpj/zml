@@ -1,6 +1,9 @@
-let f a b =
-  a + b
+let rec fib n =
+  if n <= 0 then
+    1
+  else
+    n + (fib (n - 1))
 in
-let x = f 1 2 in
+let x = fib 5 in
 ()
 

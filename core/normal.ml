@@ -18,7 +18,6 @@ open Printf
 
 
 (* The type of program-unique variable identifiers. *)
-
 module VarID = struct
   type t = int
   let compare e1 e2 = if e1 < e2 then -1 else if e1 > e2 then 1 else 0

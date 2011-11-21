@@ -1,4 +1,6 @@
 
+open Printf
+
 let parse filename =
   let ast =
     let in_ch = open_in filename in
@@ -9,10 +11,19 @@ let parse filename =
   try
     let typed_ast = Typing.infer ast in
     let normal = Normal.normalize typed_ast in
+    (* let s = Normal.string_of_normal normal in *)
     let func_normal = Function.extract_functions normal in
-    let s = Function.to_string func_normal in
-    let () = print_endline s in
-    ()
+    Function.VMap.iter
+      (fun f_id f_def ->
+        let asm = Zasm.compile_virtual f_def in
+        let () = printf "FUNCT %s_%s\n" f_def.Function.f_name (Function.VarID.to_string f_id) in
+        let () = print_endline (Zasm.to_string asm) in
+        print_endline "")
+      func_normal.Function.functions
+
+    (* let s = Function.to_string func_normal in *)
+    (*let () = print_endline s in
+    () *)
   with Typing_unify.Unification_failure constr ->
     let error_range = constr.Typing_unify.error_info.Syntax.range in
     let () = Printf.printf "Typing error in range %d:%d-%d:%d\n"

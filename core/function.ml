@@ -136,7 +136,7 @@ let rec has_free_variables (f_args : var_t list) (f_body : Normal.t) =
 
 
 let rec extract_functions_aux
-  (recur_ids : VSet.t)        (* function ids which could be referenced recursively in this expression *)
+  (recur_ids : VSet.t)        (* function ids which could be referenced recursively in this expr *)
   (normal_expr : Normal.t)    (* expression to process *)
     : expr_t =                (* resulting expression, with functions extracted *)
   match normal_expr with
