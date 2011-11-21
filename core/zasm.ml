@@ -94,81 +94,71 @@ type state_t = {
 
 let rec compile_virtual_aux
   (state : state_t)           (* Compilation context *)
+  (result_reg)                (* Register which should be used to store the result *)
   (expr : Function.expr_t)    (* Expression to be compiled *)
     : (
       state_t *   (* New context *)
-      t list *    (* List of instructions for the expression *)
-      int         (* Register which contains expression result after instruction evaluation *)
+      t list      (* List of instructions for the expression *)
     ) =
   match expr with
   | Function.Unit ->
       (* For now we're treating unit as integer zero.  It shouldn't matter. *)
-      compile_virtual_aux state (Function.Int 0)
-  | Function.Int i -> (
-      {state with reg_count = state.reg_count + 1},
-      [STORE (state.reg_count, Const i)],
-      state.reg_count
-    )
+      compile_virtual_aux state result_reg (Function.Int 0)
+  | Function.Int i ->
+      (state, [STORE (result_reg, Const i)])
   | Function.Add (a, b) ->
-      compile_virtual_binary_int state (fun x y z -> ADD (x, y, z)) a b
+      compile_virtual_binary_int state result_reg (fun x y z -> ADD (x, y, z)) a b
   | Function.Sub (a, b) ->
-      compile_virtual_binary_int state (fun x y z -> SUB (x, y, z)) a b
+      compile_virtual_binary_int state result_reg (fun x y z -> SUB (x, y, z)) a b
   | Function.Mul (a, b) ->
-      compile_virtual_binary_int state (fun x y z -> MUL (x, y, z)) a b
+      compile_virtual_binary_int state result_reg (fun x y z -> MUL (x, y, z)) a b
   | Function.Div (a, b) ->
-      compile_virtual_binary_int state (fun x y z -> DIV (x, y, z)) a b
+      compile_virtual_binary_int state result_reg (fun x y z -> DIV (x, y, z)) a b
   | Function.Mod (a, b) ->
-      compile_virtual_binary_int state (fun x y z -> MOD (x, y, z)) a b
+      compile_virtual_binary_int state result_reg (fun x y z -> MOD (x, y, z)) a b
   | Function.Neg a ->
       (* Negation is implemented as subtraction from zero. *)
-      ({state with reg_count = state.reg_count + 1},
-      [SUB ((Const 0), (Reg (VMap.find a state.reg_of_var)), state.reg_count)],
-      state.reg_count)
+      (state, [SUB (Const 0, Reg (VMap.find a state.reg_of_var), result_reg)])
   | Function.IfEq (a, b, e1, e2) ->
-      compile_virtual_if state true a b e1 e2
+      compile_virtual_if state result_reg true a b e1 e2
   | Function.IfLess (a, b, e1, e2) ->
-      compile_virtual_if state false a b e1 e2
+      compile_virtual_if state result_reg false a b e1 e2
   | Function.Var a ->
-      (state, [], VMap.find a state.reg_of_var)
+      (state, [LOAD (VMap.find a state.reg_of_var, result_reg)])
   | Function.Let (a, e1, e2) ->
       (* "let" just leads to emitting instructions for [e1] prior to [e2],
        * with the additional constraint that [a] becomes an alias for the
        * [e1] result register while compiling [e2]. *)
-      let (state, head, head_reg) = compile_virtual_aux state e1 in
-      let new_binding_state = {state with reg_of_var = VMap.add a head_reg state.reg_of_var} in
-      let (state, tail, tail_reg) = compile_virtual_aux new_binding_state e2 in
-      (state, head @ tail, tail_reg)
+      let head_result_reg = state.reg_count in
+      let state = {state with reg_count = head_result_reg + 1} in
+      let (state, head_asm) = compile_virtual_aux state head_result_reg e1 in
+      let new_binding_state = {state with reg_of_var = VMap.add a head_result_reg state.reg_of_var} in
+      let (state, tail_asm) = compile_virtual_aux new_binding_state result_reg e2 in
+      (state, head_asm @ tail_asm)
   | Function.Apply (g, g_args) ->
-      let arg_regs = List.map (fun v -> VMap.find v state.reg_of_var) g_args in (
-        {state with reg_count = state.reg_count + 1},
-        [CALL_VS2 (g, arg_regs, state.reg_count)],
-        state.reg_count
-      )
+      let arg_regs = List.map (fun v -> VMap.find v state.reg_of_var) g_args in
+      (state, [CALL_VS2 (g, arg_regs, result_reg)])
 
 (* Compile a binary integer operation. *)
-and compile_virtual_binary_int state f a b = (
-  {state with reg_count = state.reg_count + 1},
-  [f (Reg (VMap.find a state.reg_of_var)) (Reg (VMap.find b state.reg_of_var)) state.reg_count],
-  state.reg_count
+and compile_virtual_binary_int state result_reg f a b = (
+  state,
+  [f (Reg (VMap.find a state.reg_of_var)) (Reg (VMap.find b state.reg_of_var)) result_reg]
 )
 
 (* Compile an IfEq or IfLess form. *)
-and compile_virtual_if state is_cmp_equality a b e1 e2 =
+and compile_virtual_if state result_reg is_cmp_equality a b e1 e2 =
   (* Compiles down to assembly of this form:
    *    je a b ?true_label
    *    (code for e2)
-   *    load e2_result_reg -> result_reg
    *    jump ?exit_label
    * true_label:
    *    (code_for_e1)
-   *    load e1_result_reg -> result_reg
    * exit_label:
    *)    
-  let (state, true_branch, true_reg)   = compile_virtual_aux state e1 in
-  let (state, false_branch, false_reg) = compile_virtual_aux state e2 in
+  let (state, true_branch)  = compile_virtual_aux state result_reg e1 in
+  let (state, false_branch) = compile_virtual_aux state result_reg e2 in
   let true_label = state.label_count in
   let exit_label = true_label + 1 in
-  let result_reg = state.reg_count in
   let branch_inst =
     let a_reg = Reg (VMap.find a state.reg_of_var) in
     let b_reg = Reg (VMap.find b state.reg_of_var) in
@@ -176,21 +166,13 @@ and compile_virtual_if state is_cmp_equality a b e1 e2 =
       [JE (a_reg, b_reg, true_label)]
     else
       [JL (a_reg, b_reg, true_label)]
-  in
-  let false_cleanup = [
-    LOAD (false_reg, state.reg_count);
-    JUMP exit_label
-  ] in
-  let true_cleanup = [
-    LOAD (true_reg, state.reg_count)
-  ] in ( 
-    {state with label_count = exit_label + 1; reg_count = result_reg + 1},
+  in (
+    {state with label_count = exit_label + 1},
     (branch_inst @
-      false_branch @ false_cleanup @
-      [Label true_label] @
-      true_branch @ true_cleanup @
-      [Label exit_label]),
-    result_reg
+      false_branch @
+      [JUMP exit_label; Label true_label] @
+      true_branch @ 
+      [Label exit_label])
   )
 
 
@@ -202,15 +184,16 @@ let compile_virtual (f : Function.function_t) : t list =
    * as storage for the extra args. *)
   let call_vs2_max_args = 7 in
   let () = assert (List.length f.Function.f_args <= call_vs2_max_args) in
+  let result_reg = 0 in
   let init_state = List.fold_left
     (fun acc arg -> {acc with
        reg_of_var = VMap.add arg acc.reg_count acc.reg_of_var;
        reg_count  = acc.reg_count + 1
       })
-    {reg_of_var = VMap.empty; reg_count = 0; label_count = 0}
+    {reg_of_var = VMap.empty; reg_count = result_reg + 1; label_count = 0}
     f.Function.f_args
   in
-  let (_, assembly, result_reg) = compile_virtual_aux init_state f.Function.f_body in
+  let (_, assembly) = compile_virtual_aux init_state result_reg f.Function.f_body in
   assembly @ [RET (Reg result_reg)]
 
 
