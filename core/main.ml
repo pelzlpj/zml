@@ -13,13 +13,8 @@ let parse filename =
     let normal = Normal.normalize typed_ast in
     (* let s = Normal.string_of_normal normal in *)
     let func_normal = Function.extract_functions normal in
-    Function.VMap.iter
-      (fun f_id f_def ->
-        let asm = Zasm.compile_virtual f_def in
-        let () = printf "FUNCT %s_%s\n" f_def.Function.f_name (Function.VarID.to_string f_id) in
-        let () = print_endline (Zasm.to_string asm) in
-        print_endline "")
-      func_normal.Function.functions
+    let zapf_asm = Zapf.string_of_program func_normal in
+    print_endline zapf_asm
 
     (* let s = Function.to_string func_normal in *)
     (*let () = print_endline s in

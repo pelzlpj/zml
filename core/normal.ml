@@ -21,7 +21,8 @@ open Printf
 module VarID = struct
   type t = int
   let compare e1 e2 = if e1 < e2 then -1 else if e1 > e2 then 1 else 0
-  let to_string (x : t) : string = sprintf "x%d" x
+  let to_string     (x : t) : string = sprintf "x%d" x
+  let to_int_string (x : t) : string = sprintf "%d"  x
 end
 
 type var_t = VarID.t

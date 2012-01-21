@@ -11,6 +11,17 @@ type reg_t   = int
 (* Identifiers for labels placed within a function body *)
 type label_t = int
 
+
+(* Construct an assembly function identifier from a function ID. *)
+let asm_fun_name_of_id (program : Function.t) (f_id : var_t) =
+  let f_def = VMap.find f_id program.Function.functions in
+  let short_name = f_def.Function.f_name in
+  if f_id = program.Function.entry_point then
+    short_name
+  else
+    sprintf "%s_%s" short_name (VarID.to_int_string f_id)
+
+
 (* Most opcodes accept either variable identifiers (v0-v255) or integer constants
  * as operands. *)
 type operand_t =
@@ -36,54 +47,6 @@ type t =
   | CALL_VS2 of var_t * (reg_t list) * reg_t
   | RET of operand_t
   | Label of label_t
-
-
-let string_of_operand op =
-  match op with
-  | Reg r ->
-      sprintf "r%d" r
-  | Const c ->
-      sprintf "%d" c
-
-
-let rec to_string ?(acc=[]) (asm : t list) =
-  match asm with
-  | [] ->
-      String.concat "\n" (List.rev acc)
-  | inst :: tail ->
-      let s =
-        match inst with
-        | ADD (a, b, r) ->
-            sprintf "  add %s %s -> r%d" (string_of_operand a) (string_of_operand b) r
-        | SUB (a, b, r) ->
-            sprintf "  sub %s %s -> r%d" (string_of_operand a) (string_of_operand b) r
-        | MUL (a, b, r) ->
-            sprintf "  mul %s %s -> r%d" (string_of_operand a) (string_of_operand b) r
-        | DIV (a, b, r) ->
-            sprintf "  div %s %s -> r%d" (string_of_operand a) (string_of_operand b) r
-        | MOD (a, b, r) ->
-            sprintf "  mod %s %s -> r%d" (string_of_operand a) (string_of_operand b) r
-        | JE (a, b, lb) ->
-            sprintf "  je %s %s ?label%d" (string_of_operand a) (string_of_operand b) lb
-        | JL (a, b, lb) ->
-            sprintf "  jl %s %s ?label%d" (string_of_operand a) (string_of_operand b) lb
-        | JUMP lb ->
-            sprintf "  jump ?label%d" lb
-        | LOAD (r1, r2) ->
-            sprintf "  load r%d -> r%d" r1 r2
-        | STORE (r, a) ->
-            sprintf "  store 'r%d %s" r (string_of_operand a)
-        | CALL_VS2 (f, reg_args, r) ->
-            sprintf "  call_vs2 function_%s %s -> r%d"
-              (VarID.to_string f) 
-              (String.concat " " (List.map (sprintf "r%d") reg_args))
-              r
-        | RET a ->
-            sprintf "  ret %s" (string_of_operand a)
-        | Label lb ->
-            sprintf "label%d:" lb
-      in
-      to_string ~acc:(s :: acc) tail
 
 
 type state_t = {

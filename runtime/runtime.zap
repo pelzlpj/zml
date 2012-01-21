@@ -44,7 +44,7 @@ __begin_high::
 
 __zml_main::
    call_1n __zml_init_heap
-   call_1n __main
+   call_1n zml_main  ; jumping to user code entry point
    quit
 
 
@@ -1105,5 +1105,8 @@ is_heap_ref:
 end_roots_table:
    rtrue
 
+; User code goes here.  It shall define the entry point "zml_main",
+; which is invoked without arguments from __zml_main .
+.INSERT "program.zap"
 
 .END
