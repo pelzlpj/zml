@@ -1,0 +1,15 @@
+
+* Register spilling.  At present, the compilation strategy calls directly into Zasm.compile_virtual,
+  which makes the assumption that there are an infinite number of registers available.  This works
+	for trivial functions, but will stop working as soon as functions get large enough to require
+	register reuse.
+
+* Parser rewrite.  I'm not liking the way the ocamlyacc parser is shaping up.  It's difficult to
+  read, and I'm not sure it will scale up well to more complicated syntax.  I plan to rewrite using
+	a recursive descent approach.  I want to do this rewrite *before* adding significant amounts of
+	new syntax.
+
+* Introduction of reference types.  The runtime library already has reference type support, but the
+	zasm layer needs a bunch of work to invoke zml_register_root and zml_unregister_root in order to
+	manage the lifetimes of reference types declared on the stack.
+
