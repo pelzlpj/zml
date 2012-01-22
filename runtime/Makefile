@@ -4,7 +4,7 @@ endif
 
 all: runtime.z5
 
-runtime.z5: runtime.zap header.zap globals.zap empty_heap.zap
+runtime.z5: runtime.zap header.zap globals.zap empty_heap.zap program.zap
 	mono $(ZAPF_PATH)/zapf.exe -i $<
 
 clean:

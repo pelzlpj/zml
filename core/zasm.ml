@@ -19,7 +19,11 @@ let asm_fun_name_of_id (program : Function.t) (f_id : var_t) =
   if f_id = program.Function.entry_point then
     short_name
   else
-    sprintf "%s_%s" short_name (VarID.to_int_string f_id)
+    match f_def.Function.f_impl with
+    | Function.NativeFunc _ ->
+      sprintf "%s_%s" short_name (VarID.to_int_string f_id)
+    | Function.ExtFunc ext_impl ->
+      ext_impl
 
 
 (* Most opcodes accept either variable identifiers (v0-v255) or integer constants
@@ -141,12 +145,12 @@ and compile_virtual_if state result_reg is_cmp_equality a b e1 e2 =
 
 (* Compile a function to "virtual" Z5 assembly.  This is Z-machine assembly
  * with an infinite number of registers (aka "local variables") available. *)
-let compile_virtual (f : Function.function_t) : t list =
+let compile_virtual (f_args : var_t list) (f_body : Function.expr_t) : t list =
   (* call_vs2 supports 0 through 7 arguments.  Implementing functions with
    * more than seven arguments will require heap-allocating a reference array
    * as storage for the extra args. *)
   let call_vs2_max_args = 7 in
-  let () = assert (List.length f.Function.f_args <= call_vs2_max_args) in
+  let () = assert (List.length f_args <= call_vs2_max_args) in
   let result_reg = 0 in
   let init_state = List.fold_left
     (fun acc arg -> {acc with
@@ -154,9 +158,9 @@ let compile_virtual (f : Function.function_t) : t list =
        reg_count  = acc.reg_count + 1
       })
     {reg_of_var = VMap.empty; reg_count = result_reg + 1; label_count = 0}
-    f.Function.f_args
+    f_args
   in
-  let (_, assembly) = compile_virtual_aux init_state result_reg f.Function.f_body in
+  let (_, assembly) = compile_virtual_aux init_state result_reg f_body in
   assembly @ [RET (Reg result_reg)]
 
 

@@ -84,21 +84,33 @@ let string_of_function
   (f_id : var_t)          (* identifier for function to be compiled *)
     : string =
   let f_def = VMap.find f_id program.Function.functions in
-  let asm = compile_virtual f_def in
-  let local_var_names = List.map (sprintf "r%d") (list_range 15) in
-  let local_vars_str = String.concat ", " local_var_names in
-  let funct_header = sprintf ".FUNCT %s, %s\n"
-    (asm_fun_name_of_id program f_id)
-    local_vars_str
-  in
-  let funct_body = string_of_asm program asm in
-  funct_header ^ funct_body
+  match f_def.Function.f_impl with
+  | Function.NativeFunc (f_args, f_body) ->
+    let asm = compile_virtual f_args f_body in
+    (* Note: temporarily, calling convention is to leave r0 as the last local
+     * var, and store the function return value in r0. *)
+    let local_var_names = (List.map (sprintf "r%d") (list_range ~start:1 15)) @ ["r0"] in
+    let local_vars_str = String.concat ", " local_var_names in
+    let funct_header = sprintf ".FUNCT %s, %s\n"
+      (asm_fun_name_of_id program f_id)
+      local_vars_str
+    in
+    let funct_body = string_of_asm program asm in
+    funct_header ^ funct_body
+  | Function.ExtFunc _ ->
+    ""
 
 
 (* Compile all functions, and serialize them to Zapf-compatible assembly. *)
 let string_of_program (program : Function.t) : string =
+  (* Skip over the external function declarations... *)
   let f_strings = Function.VMap.fold
-    (fun f_id f_def acc -> (string_of_function program f_id) :: acc)
+    (fun f_id f_def acc ->
+      match f_def.Function.f_impl with
+      | Function.NativeFunc _ -> 
+        (string_of_function program f_id) :: acc
+      | Function.ExtFunc _ ->
+        acc)
     program.Function.functions
     []
   in

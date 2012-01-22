@@ -35,13 +35,14 @@ type expr_t =
   | Apply of var_t * (var_t list)             (* Function application *)
 
 
+type function_def_t =
+  | NativeFunc of (var_t list) * expr_t     (* Function defined in ZML (function args, function body) *)
+  | ExtFunc of string                       (* Function defined in ASM (with ASM identifier) *)
+
 type function_t = {
   (** Name of the function (will be injected into the assembly to assist in debugging) *)
   f_name : string;
-  (** Function arguments *)
-  f_args : var_t list;
-  (** Function body *)
-  f_body : expr_t
+  f_impl : function_def_t
 }
 
 type t = {
@@ -76,15 +77,19 @@ let rec string_of_expr (expr : expr_t) : string =
 
 
 let string_of_function id (f : function_t) : string =
-  (sprintf "BEGIN FUNCTION (source name: %s) ==> %s : %s =\n"
-    f.f_name
-    (VarID.to_string id)
-    begin match f.f_args with
-    | [] -> "()"
-    | _  -> String.concat " -> " (List.map VarID.to_string f.f_args)
-    end) ^
-  (string_of_expr f.f_body) ^
-  (sprintf "\nEND FUNCTION (source name: %s)" f.f_name)
+  match f.f_impl with
+  | NativeFunc (f_args, f_body) ->
+    (sprintf "BEGIN FUNCTION (source name: %s) ==> %s : %s =\n"
+      f.f_name
+      (VarID.to_string id)
+      begin match f_args with
+      | [] -> "()"
+      | _  -> String.concat " -> " (List.map VarID.to_string f_args)
+      end) ^
+    (string_of_expr f_body) ^
+    (sprintf "\nEND FUNCTION (source name: %s)" f.f_name)
+  | ExtFunc ext_impl ->
+    sprintf "EXTERNAL %s ==> %s\n" f.f_name ext_impl
 
 let to_string (a : t) =
   let function_strings = VMap.fold
@@ -112,9 +117,9 @@ let add_function_def (id : var_t) (def : function_t) : unit =
  * closure conversion. *)
 let rec has_free_variables (f_args : var_t list) (f_body : Normal.t) =
   match f_body with
-  | Normal.Unit | Normal.Int _ ->
+  | Normal.Unit | Normal.Int _ | Normal.External _ ->
       false
-  | Normal.Add (a, b)| Normal.Sub (a, b) | Normal.Mul (a, b)
+  | Normal.Add (a, b) | Normal.Sub (a, b) | Normal.Mul (a, b)
   | Normal.Div (a, b) | Normal.Mod (a, b) ->
       (not (List.mem a f_args)) || (not (List.mem b f_args))
   | Normal.Neg a | Normal.Var a ->
@@ -162,7 +167,11 @@ let rec extract_functions_aux
       let () = assert (not (has_free_variables (f_id :: f_args) f_body)) in
       let recur_ids = VSet.add f_id recur_ids in
       let body_extracted = extract_functions_aux recur_ids f_body in
-      let () = add_function_def f_id {f_name; f_args; f_body=body_extracted} in
+      let () = add_function_def f_id {f_name; f_impl = NativeFunc (f_args, body_extracted)} in
+      extract_functions_aux recur_ids f_scope_expr
+  | Normal.External (f_name, f_id, f_ext_impl, f_scope_expr) ->
+      let recur_ids = VSet.add f_id recur_ids in
+      let () = add_function_def f_id {f_name; f_impl = ExtFunc f_ext_impl} in
       extract_functions_aux recur_ids f_scope_expr
   | Normal.Apply (f_id, f_args) ->
       (* TODO: detect known functions versus unknown functions versus closures *)
@@ -176,7 +185,7 @@ let extract_functions (expr : Normal.t) : t =
   let toplevel_expr = extract_functions_aux VSet.empty expr in
   (* Construct the program entry point, [zml_main : unit -> unit] *)
   let () = add_function_def Normal.reserved_main_id
-    {f_name="zml_main"; f_args=[]; f_body=toplevel_expr}
+    {f_name = "zml_main"; f_impl = NativeFunc ([], toplevel_expr)}
   in
   {functions = !function_defs; entry_point=Normal.reserved_main_id}
 

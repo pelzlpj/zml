@@ -40,6 +40,7 @@ and expr_t =
   | Var of string
   | Let of string * (string list) * t * t     (* newly bound variable does not recur in the "equals" expression *)
   | LetRec of string * (string list) * t * t  (* newly bound variable may recur in the "equals" expression *)
+  | External of string * Type.t * string * t  (* external function declaration *)
   | Apply of t * (t list)
 
 
@@ -49,6 +50,11 @@ let untyped_expr expr range = {
   parser_info = {range; type_annot = None}
 }
 
+(* Construct an AST node with type information *)
+let typed_expr expr type_annot range = {
+  expr;
+  parser_info = {range; type_annot = Some type_annot}
+}
 
 let rec print_ast (ast : t) =
   let print_binary ident a b =
@@ -104,6 +110,8 @@ let rec print_ast (ast : t) =
         (String.concat "; " (List.fold_left (fun acc a -> acc @ [a]) [] a_list))
         (print_ast b)
         (print_ast c)
+    | External (a, a_typ, b, c) ->
+      sprintf "External (%s, %s, %s)" a b (print_ast c)
     | Apply (a, b_list) ->
       sprintf "Apply (%s [%s])"
         (print_ast a)

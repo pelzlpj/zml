@@ -27,16 +27,20 @@
     table
 
   let keyword_tokens = [
-    "if"   , IF;
-    "then" , THEN;
-    "else" , ELSE;
-    "let"  , LET;
-    "rec"  , REC;
-    "in"   , IN;
-    "not"  , NOT;
-    "mod"  , MOD;
-    "true" , BOOL(true);
-    "false", BOOL(false);
+    "if"       , IF;
+    "then"     , THEN;
+    "else"     , ELSE;
+    "let"      , LET;
+    "rec"      , REC;
+    "in"       , IN;
+    "not"      , NOT;
+    "mod"      , MOD;
+    "true"     , BOOL(true);
+    "false"    , BOOL(false);
+    "external" , EXTERNAL;
+    "unit"     , TYPE_UNIT;
+    "bool"     , TYPE_BOOL;
+    "int"      , TYPE_INT;
   ]
 
   let keyword_table = create_hashtable keyword_tokens
@@ -85,12 +89,20 @@ rule token = parse
     { LT }
   | ">"
     { GT }
+  | ":"
+    { COLON }
   | ";"
     { SEMI }
+  | "->"
+    { TYPE_ARROW }
   | lower (lower|upper|digit|'_')*
     { let s = Lexing.lexeme lexbuf in
       try Hashtbl.find keyword_table s
       with Not_found -> IDENT(Lexing.lexeme lexbuf) }
+  | "\"" ("\\\""|[^'"'])* "\""
+    { let lexeme = Lexing.lexeme lexbuf in
+      let quoted_content = String.sub lexeme 1 ((String.length lexeme) - 2) in
+      STRING_LITERAL(quoted_content) }
   | eof
     { EOF }
   | _

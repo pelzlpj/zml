@@ -41,6 +41,7 @@ type expr_t =
   | Var of string                                        (* Bound variable *)
   | Let of bind_t * (bind_t list) * aexpr_t * aexpr_t    (* Let expression *)
   | LetRec of bind_t * (bind_t list) * aexpr_t * aexpr_t (* Let Rec expression *)
+  | External of bind_t * string * aexpr_t                (* External function definition *)
   | Apply of aexpr_t * (aexpr_t list)                    (* Function application *)
 
 and aexpr_t = {
@@ -124,6 +125,12 @@ let rec annotate (env : Type.t SMap.t) (parsed_expr : Syntax.t) : aexpr_t =
       } with Duplicate_argument_inner arg_name ->
         raise (Duplicate_argument (arg_name, parser_info))
       end
+  | Syntax.External (a_name, a_type, a_impl, b) -> 
+      let env = SMap.add a_name a_type env in {
+      expr = External ({bind_name = a_name; bind_type = a_type}, a_impl, annotate env b);
+      inferred_type = Type.make_type_var ();
+      parser_info
+    }
   | Syntax.Apply (a, args) -> {
       expr          = Apply (annotate env a, List.map (annotate env) args);
       inferred_type = Type.make_type_var ();
@@ -287,6 +294,16 @@ let rec compute_constraints (acc : constraint_t list) (aexprs : aexpr_t list) : 
         error_info = ae.parser_info
       } in
       compute_constraints (expr_constr :: arrow_constr :: acc) (eq_expr :: in_expr :: tail)
+  | {expr = External (fun_binding, fun_ext_impl, in_expr); _} as ae :: tail ->
+      (* When annotating the expression tree we  plugged in a dummy typevar as the
+       * inferred type of this expression, so now we need to constrain that typevar to
+       * match the type of in_expr. *)
+      let constr = {
+        left_type  = ae.inferred_type;
+        right_type = in_expr.inferred_type;
+        error_info = ae.parser_info
+      } in
+      compute_constraints (constr :: acc) (in_expr :: tail)
   | {expr = Apply (fun_expr, args_exprs); _} as ae :: tail ->
       (* We need to have an arrow type in order to carry out function application *)
       let arrow_type = List.fold_right
@@ -352,6 +369,9 @@ let rec apply_substs (substs : Typing_unify.subst_t list) (aexpr : aexpr_t) =
 				sub eq_expr,
 				sub in_expr)
 		}
+  | {expr = External (fun_binding, fun_ext_impl, in_expr); _} -> {aexpr with
+      expr = External (fun_binding, fun_ext_impl, sub in_expr)
+    }
 
 	| {expr = Apply (a, b_list); _} -> {aexpr with expr = Apply (sub a, List.map sub b_list)}
 

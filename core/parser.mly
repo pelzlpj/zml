@@ -37,6 +37,8 @@ let rhs_range n = {
 let untyped_expr_sym expr   = untyped_expr expr (symbol_range ())
 let untyped_expr_rhs n expr = untyped_expr expr (rhs_range n)
 
+let typed_expr_sym expr type_annot = typed_expr expr type_annot (symbol_range ())
+
 %}
 
 
@@ -63,9 +65,15 @@ let untyped_expr_rhs n expr = untyped_expr expr (rhs_range n)
 %token LT
 %token GT
 %token SEMI
+%token COLON
 %token <string> IDENT
+%token <string> STRING_LITERAL
+%token EXTERNAL
+%token TYPE_UNIT
+%token TYPE_BOOL
+%token TYPE_INT
+%token TYPE_ARROW
 %token EOF
-%token DISAMBIGUATION
 
 
 /* Precedence rules. */
@@ -106,6 +114,8 @@ expr:
     { untyped_expr_sym (Let ($2, List.rev $3, $5, $7)) }
   | LET REC IDENT ident_list EQ expr IN seq_expr
     { untyped_expr_sym (LetRec ($3, List.rev $4, $6, $8)) }
+  | EXTERNAL IDENT COLON type_signature EQ STRING_LITERAL IN seq_expr
+    { typed_expr_sym (External ($2, $4, $6, $8)) $4 }
   | IF expr THEN expr ELSE expr
     { untyped_expr_sym (If ($2, $4, $6)) }
   | NOT expr
@@ -170,5 +180,19 @@ ident_list:
     { $2 :: $1 }
   | /* empty */
     { [] }
+
+
+/* FIXME: this is just barely enough to get external functions working.
+ * Much more work is required for parsing full-blown type signatures. */
+type_signature:
+  | type_signature TYPE_ARROW type_signature
+    { Type.Arrow ($1, $3) }
+  | TYPE_UNIT
+    { Type.Unit }
+  | TYPE_BOOL
+    { Type.Bool }
+  | TYPE_INT
+    { Type.Int }
+
 
 

@@ -49,6 +49,7 @@ type t =
   | Var of var_t                                    (* Bound variable *)
   | Let of var_t * t * t                            (* Let binding for a value type *)
   | LetFun of string * var_t * (var_t list) * t * t (* Let binding for a function definition *)
+  | External of string * var_t * string * t         (* External function definition *)
   | Apply of var_t * (var_t list)                   (* Function application *)
 
 
@@ -75,6 +76,8 @@ let rec string_of_normal (ast : t) : string =
       sprintf "let %s_%s %s = %s in\n%s" name (VarID.to_string id)
         (String.concat " " (List.map VarID.to_string args))
         (string_of_normal def) (string_of_normal use)
+  | External (name, id, ext_impl, use) ->
+      sprintf "external %s_%s = %s in\n%s" name (VarID.to_string id) ext_impl (string_of_normal use)
   | Apply (f, args) ->
       sprintf "apply(%s %s)" (VarID.to_string f) (String.concat " " (List.map VarID.to_string args))
 
@@ -314,6 +317,10 @@ and normalize_aux
       normalize_let renames false name args eq_expr in_expr
   | Typing.LetRec (name, args, eq_expr, in_expr) ->
       normalize_let renames true name args eq_expr in_expr
+  | Typing.External (name, ext_impl, in_expr) ->
+      let (in_renames, binding) = free_named_var renames name.Typing.bind_name in
+      let in_norm = normalize_aux in_renames in_expr.Typing.expr in
+      External (name.Typing.bind_name, binding, ext_impl, in_norm)
   | Typing.Apply (fun_expr, fun_args) ->
       let arg_bindings = List.map
         (fun aexpr ->

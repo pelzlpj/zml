@@ -1105,6 +1105,23 @@ is_heap_ref:
 end_roots_table:
    rtrue
 
+
+.FUNCT zml_print_int, i
+	 ; Prints an integer, using decimal notation.
+	 ;
+	 ; param i: value to be printed
+	 print_num i
+	 rtrue
+
+
+.FUNCT zml_print_newline, unit
+ 	 ; Prints a newline character.
+	 ;
+	 ; param unit: receives value 0 as the unit argument
+	 new_line
+	 rtrue
+
+
 ; User code goes here.  It shall define the entry point "zml_main",
 ; which is invoked without arguments from __zml_main .
 .INSERT "program.zap"
