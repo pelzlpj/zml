@@ -54,7 +54,7 @@ let rec string_of_asm
         | CALL_VS2 (f, reg_args, r) ->
             sprintf "  call_vs2 %s %s -> r%d"
               (asm_fun_name_of_id program f)
-              (String.concat " " (List.map (sprintf "r%d") reg_args))
+              (String.concat " " (List.map string_of_operand reg_args))
               r
         | RET a ->
             sprintf "  ret %s" (string_of_operand a)
@@ -62,20 +62,6 @@ let rec string_of_asm
             sprintf "label%d:" lb
       in
       string_of_asm ~acc:(s :: acc) program tail
-
-
-(* See Python range() builtin. *)
-let list_range ?(start=0) ?(step=1) stop =
-  if step = 0 then
-    invalid_arg "list_range: step must be nonzero"
-  else
-    let rec loop acc i =
-      if (step > 0 && i >= stop) || (step < 0 && i <= stop) then
-        List.rev acc
-      else
-        loop (i :: acc) (i + step)
-    in
-    loop [] start
 
 
 (* Compile a function and serialize it to Zapf-compatible assembly. *)
@@ -86,10 +72,8 @@ let string_of_function
   let f_def = VMap.find f_id program.Function.functions in
   match f_def.Function.f_impl with
   | Function.NativeFunc (f_args, f_body) ->
-    let asm = compile_virtual f_args f_body in
-    (* Note: temporarily, calling convention is to leave r0 as the last local
-     * var, and store the function return value in r0. *)
-    let local_var_names = (List.map (sprintf "r%d") (list_range ~start:1 15)) @ ["r0"] in
+    let asm = compile f_args f_body in
+    let local_var_names = (List.map (sprintf "r%d") (list_range 15)) in
     let local_vars_str = String.concat ", " local_var_names in
     let funct_header = sprintf ".FUNCT %s, %s\n"
       (asm_fun_name_of_id program f_id)

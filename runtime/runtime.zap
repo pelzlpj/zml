@@ -1106,7 +1106,7 @@ end_roots_table:
    rtrue
 
 
-.FUNCT zml_print_int, i
+.FUNCT zml_print_dec, i
 	 ; Prints an integer, using decimal notation.
 	 ;
 	 ; param i: value to be printed
@@ -1119,6 +1119,14 @@ end_roots_table:
 	 ;
 	 ; param unit: receives value 0 as the unit argument
 	 new_line
+	 rtrue
+
+
+.FUNCT zml_exit, unit
+	 ; Immediately terminates the program.
+	 ;
+	 ; param unit: receives value 0 as the unit argument
+	 quit
 	 rtrue
 
 
