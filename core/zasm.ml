@@ -183,133 +183,142 @@ type cfg_node_t = {
 }
 
 
+module Label = struct
+  type t = label_t
+  let compare e1 e2 = if e1 < e2 then -1 else if e1 > e2 then 1 else 0
+end
+module LMap = Map.Make(Label)
+
 (* Generate a lookup table for the offsets at which labels are found in
  * an assembly fragment. *)
-let make_label_table asm =
-  let label_offsets = Hashtbl.create 10 in
-  let _ = List.fold_left
-    (fun i inst ->
-      match inst with
-      | Label label ->
-          let () = assert (not (Hashtbl.mem label_offsets label)) in
-          let () = Hashtbl.add label_offsets label i in
-          (i + 1)
-      | _ ->
-          (i + 1))
-    0
-    asm
+let make_label_map asm : int LMap.t =
+  let (_, result) =
+    List.fold_left
+      (fun (i, m) inst ->
+        match inst with
+        | Label label ->
+            let () = assert (not (LMap.mem label m)) in
+            (i + 1, LMap.add label i m)
+        | _ ->
+            (i + 1, m))
+      (0, LMap.empty)
+      asm
   in
-  label_offsets
+  result
 
 
-(* Initialize the control flow graph, in preparation for iterative solution. *)
-let init_control_flow_graph (asm : t list) : cfg_node_t array =
-  let cfg_len = List.length asm in
-  let cfg = Array.make cfg_len {
-    instruction = Label 0;
-    successors  = [];
+module Int = struct
+  type t = int
+  let compare e1 e2 = if e1 < e2 then -1 else if e1 > e2 then 1 else 0
+end
+module IMap = Map.Make(Int)
+
+
+(* Initialize a single node of the control flow graph. *)
+let init_control_flow_node
+    (cfg_len : int)               (* Total number of nodes in the control flow graph *)
+    (label_offsets : int LMap.t)  (* Lookup table for mapping labels to node numbers *)
+    (i : int)                     (* Index of this node *)
+    (inst : t)                    (* Instruction for this node *)
+      : cfg_node_t =
+  let default_node = {
+    instruction = inst;
+    successors  = if i < cfg_len then [i + 1] else [];
     gen         = VSet.empty;
     kill        = VSet.empty;
     live_in     = VSet.empty;
     live_out    = VSet.empty
   } in
-  let label_offsets = make_label_table asm in
-  let item_count = List.fold_left
-    (fun i inst ->
-      let arr_item =
-        let default_node = {
-          instruction = inst;
-          successors  = if i < cfg_len then [i + 1] else [];
-          gen         = VSet.empty;
-          kill        = VSet.empty;
-          live_in     = VSet.empty;
-          live_out    = VSet.empty
-        } in
-        match inst with
-        | ADD (op1, op2, v3) | SUB (op1, op2, v3) | MUL (op1, op2, v3)
-        | DIV (op1, op2, v3) | MOD (op1, op2, v3) ->
-            let binary_op_node = { default_node with kill = VSet.singleton v3 } in
-            begin match (op1, op2) with
-            | (Reg v1, Reg v2) ->
-                { binary_op_node with gen = vset_of_list [v1; v2] }
-            | (Reg v1, Const _) | (Const _, Reg v1) ->
-                { binary_op_node with gen = VSet.singleton v1 }
-            | (Const _, Const _) ->
-                binary_op_node
-            end
-        | JE (op1, op2, label) | JL (op1, op2, label) ->
-            let branch_node = { default_node with
-              instruction = inst;
-              successors  = (Hashtbl.find label_offsets label) :: default_node.successors
-            } in
-            begin match (op1, op2) with
-            | (Reg v1, Reg v2) ->
-                { branch_node with gen = vset_of_list [v1; v2] }
-            | (Reg v1, Const _) | (Const _, Reg v1) ->
-                { branch_node with gen = VSet.singleton v1 }
-            | (Const _, Const _) ->
-                branch_node
-            end
-        | JUMP label -> { default_node with
-            successors = [Hashtbl.find label_offsets label];
-          }
-        | LOAD (v1, v2) -> { default_node with
-            gen  = VSet.singleton v1;
-            kill = VSet.singleton v2
-          }
-        | STORE (v1, op2) ->
-            let store_node = { default_node with kill = VSet.singleton v1 } in
-            begin match op2 with
-            | Reg v2 -> { store_node with gen = VSet.singleton v2 }
-            | Const _ -> store_node
-            end
-        | CALL_VS2 (f_id, args, result) ->
-            List.fold_left
-              (fun acc arg ->
-                match arg with
-                | Reg v   -> { acc with gen = VSet.add v acc.gen }
-                | Const _ -> acc)
-              { default_node with kill = VSet.singleton result }
-              args
-        | RET op ->
-            let return_node = { default_node with successors = [] } in
-            begin match op with
-            | Reg v   -> { return_node with gen = VSet.singleton v }
-            | Const _ -> return_node
-            end
-        | Label _ ->
-            default_node
-      in
-      let () = cfg.(i) <- arr_item in
-      (i + 1))
-    0
+  match inst with
+  | ADD (op1, op2, v3) | SUB (op1, op2, v3) | MUL (op1, op2, v3)
+  | DIV (op1, op2, v3) | MOD (op1, op2, v3) ->
+      let binary_op_node = { default_node with kill = VSet.singleton v3 } in
+      begin match (op1, op2) with
+      | (Reg v1, Reg v2) ->
+          { binary_op_node with gen = vset_of_list [v1; v2] }
+      | (Reg v1, Const _) | (Const _, Reg v1) ->
+          { binary_op_node with gen = VSet.singleton v1 }
+      | (Const _, Const _) ->
+          binary_op_node
+      end
+  | JE (op1, op2, label) | JL (op1, op2, label) ->
+      let branch_node = { default_node with
+        instruction = inst;
+        successors  = (LMap.find label label_offsets) :: default_node.successors
+      } in
+      begin match (op1, op2) with
+      | (Reg v1, Reg v2) ->
+          { branch_node with gen = vset_of_list [v1; v2] }
+      | (Reg v1, Const _) | (Const _, Reg v1) ->
+          { branch_node with gen = VSet.singleton v1 }
+      | (Const _, Const _) ->
+          branch_node
+      end
+  | JUMP label -> { default_node with
+      successors = [LMap.find label label_offsets];
+    }
+  | LOAD (v1, v2) -> { default_node with
+      gen  = VSet.singleton v1;
+      kill = VSet.singleton v2
+    }
+  | STORE (v1, op2) ->
+      let store_node = { default_node with kill = VSet.singleton v1 } in
+      begin match op2 with
+      | Reg v2 -> { store_node with gen = VSet.singleton v2 }
+      | Const _ -> store_node
+      end
+  | CALL_VS2 (f_id, args, result) ->
+      List.fold_left
+        (fun acc arg ->
+          match arg with
+          | Reg v   -> { acc with gen = VSet.add v acc.gen }
+          | Const _ -> acc)
+        { default_node with kill = VSet.singleton result }
+        args
+  | RET op ->
+      let return_node = { default_node with successors = [] } in
+      begin match op with
+      | Reg v   -> { return_node with gen = VSet.singleton v }
+      | Const _ -> return_node
+      end
+  | Label _ ->
+      default_node
+
+
+(* Initialize the control flow graph, in preparation for iterative solution. *)
+let init_control_flow_graph (asm : t list) : cfg_node_t IMap.t =
+  let cfg_len = List.length asm in
+  let label_offsets = make_label_map asm in
+  let (_, graph) = List.fold_left
+    (fun (i, m) inst ->
+      let node = init_control_flow_node cfg_len label_offsets i inst in
+      (i + 1, IMap.add i node m))
+    (0, IMap.empty)
     asm
   in
-  let () = assert ((item_count : int) = cfg_len) in
-  cfg
+  graph
 
 
 (* Solve for the sets of variables which are "live" before and after every instruction. *)
-let solve_liveness (asm : t list) : cfg_node_t array =
+let solve_liveness (asm : t list) : cfg_node_t IMap.t =
   let rec fixpoint graph =
-    let next_graph = Array.copy graph in
-    for i = 0 to (Array.length graph) - 1 do
-      let old = graph.(i) in
-      let outputs_not_killed = VSet.diff old.live_out old.kill in
-      let successor_inputs = List.fold_left
-        (fun acc j -> VSet.union acc graph.(j).live_in)
-        VSet.empty
-        old.successors
-      in
-      next_graph.(i) <- { old with
-      live_in  = VSet.union old.gen outputs_not_killed;
-        live_out = successor_inputs
-      }
-    done;
-    if next_graph = graph then
+    let next_graph = IMap.fold
+      (fun i old_node acc ->
+        let outputs_not_killed = VSet.diff old_node.live_out old_node.kill in
+        let successor_inputs = List.fold_left
+          (fun acc j -> VSet.union acc (IMap.find j graph).live_in)
+          VSet.empty
+          old_node.successors
+        in
+        let new_node = { old_node with
+          live_in  = VSet.union old_node.gen outputs_not_killed;
+          live_out = successor_inputs
+        } in
+        IMap.add i new_node acc)
       graph
-    else
-      fixpoint next_graph
+      IMap.empty
+    in
+    if next_graph = graph then graph else fixpoint next_graph
   in
   fixpoint (init_control_flow_graph asm)
 
@@ -391,20 +400,20 @@ let make_interference_graph (asm : t list) : VSet.t VMap.t =
   in
   (* All variables should be present in the graph, regardless of whether they interfere with
    * other variables.  So start with a graph containing only vertices (no edges). *)
-  let all_variables = Array.fold_left
-    (fun acc node -> VSet.union (VSet.union acc node.gen) node.kill)
-    VSet.empty
+  let all_variables = IMap.fold
+    (fun _ node acc -> VSet.union (VSet.union acc node.gen) node.kill)
     liveness
+    VSet.empty
   in
   let graph_with_vertices = VSet.fold
     (fun x acc -> VMap.add x VSet.empty acc)
     all_variables
     VMap.empty
   in
-  Array.fold_left
-    (fun acc node -> vmap_naive_union acc (interfering_of_instruction node))
-    graph_with_vertices
+  IMap.fold
+    (fun _ node acc -> vmap_naive_union acc (interfering_of_instruction node))
     liveness
+    graph_with_vertices
 
 
 let print_interference_graph graph =
