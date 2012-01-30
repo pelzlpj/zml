@@ -12,17 +12,15 @@ open Zasm
 
 let string_of_operand op =
   match op with
-  | Reg r ->
-      sprintf "r%d" r
-  | Const c ->
-      sprintf "%d" c
+  | Reg r   -> ZReg.string_of r
+  | Const c -> sprintf "%d" c
 
 
 (* Serialize a list of assembly instructions to a string. *)
 let rec string_of_asm
-  ?(acc=[])                 (* accumulator for the result *)
-  (program : Function.t)    (* description of entire program (functions + entry point) *)
-  (asm : Zasm.t list)       (* instructions to be serialized *)
+  ?(acc=[])                   (* accumulator for the result *)
+  (program : Function.t)      (* description of entire program (functions + entry point) *)
+  (asm : ZReg.t Zasm.t list)  (* instructions to be serialized *)
     : string =
   match asm with
   | [] ->
@@ -31,15 +29,15 @@ let rec string_of_asm
       let s =
         match inst with
         | ADD (a, b, r) ->
-            sprintf "  add %s %s -> r%d" (string_of_operand a) (string_of_operand b) r
+            sprintf "  add %s %s -> %s" (string_of_operand a) (string_of_operand b) (ZReg.string_of r)
         | SUB (a, b, r) ->
-            sprintf "  sub %s %s -> r%d" (string_of_operand a) (string_of_operand b) r
+            sprintf "  sub %s %s -> %s" (string_of_operand a) (string_of_operand b) (ZReg.string_of r)
         | MUL (a, b, r) ->
-            sprintf "  mul %s %s -> r%d" (string_of_operand a) (string_of_operand b) r
+            sprintf "  mul %s %s -> %s" (string_of_operand a) (string_of_operand b) (ZReg.string_of r)
         | DIV (a, b, r) ->
-            sprintf "  div %s %s -> r%d" (string_of_operand a) (string_of_operand b) r
+            sprintf "  div %s %s -> %s" (string_of_operand a) (string_of_operand b) (ZReg.string_of r)
         | MOD (a, b, r) ->
-            sprintf "  mod %s %s -> r%d" (string_of_operand a) (string_of_operand b) r
+            sprintf "  mod %s %s -> %s" (string_of_operand a) (string_of_operand b) (ZReg.string_of r)
         | JE (a, b, lb) ->
             sprintf "  je %s %s ?label%d" (string_of_operand a) (string_of_operand b) lb
         | JL (a, b, lb) ->
@@ -48,19 +46,19 @@ let rec string_of_asm
             (* workaround for zapf-0.3 parser bug: need to omit question mark before the label. *)
             sprintf "  jump label%d" lb
         | LOAD (r1, r2) ->
-            sprintf "  load r%d -> r%d" r1 r2
+            sprintf "  load %s -> %s" (ZReg.string_of r1) (ZReg.string_of r2)
         | STORE (r, a) ->
-            sprintf "  store 'r%d %s" r (string_of_operand a)
+            sprintf "  store '%s %s" (ZReg.string_of r) (string_of_operand a)
         | CALL_VS2 (f, reg_args, r) ->
             let fun_name_str =
               match f with
               | Mapped f_id -> asm_fun_name_of_id program f_id
               | AsmName s   -> s
             in
-            sprintf "  call_vs2 %s %s -> r%d"
+            sprintf "  call_vs2 %s %s -> %s"
               fun_name_str
               (String.concat " " (List.map string_of_operand reg_args))
-              r
+              (ZReg.string_of r)
         | RET a ->
             sprintf "  ret %s" (string_of_operand a)
         | Label lb ->

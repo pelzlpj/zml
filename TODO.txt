@@ -1,8 +1,4 @@
-
-* Draw a cleaner distinction between "variables", "virtual zasm registers", and "zasm registers".
-	Three different data types... even if they're all "int" under the hood they should probably be
-	hidden behind abstract types so that the type system can force correct usage.  Probably makes
-	sense to create a ZasmVirtual module to keep the virtual stuff segregated.
+* Closure conversion.
 
 * Parser rewrite.  I'm not liking the way the ocamlyacc parser is shaping up.  It's difficult to
   read, and I'm not sure it will scale up well to more complicated syntax.  I plan to rewrite using
