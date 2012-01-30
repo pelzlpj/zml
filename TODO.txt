@@ -1,10 +1,8 @@
 
-* Register spilling.  At present, the compilation strategy will fail if the register allocator
-	requires more than 15 registers ("local variables") for a function implementation.  The most
-	straightforward solution is probably to heap-allocate a value array and use that for storage;
-	unfortunately the stack is tricky to use for spilling because it doesn't support random access.
-	(On the other hand, heap allocation probably means working with "root" references in order to work
-	correctly alongside any other code which needs to heap-allocate.)
+* Draw a cleaner distinction between "variables", "virtual zasm registers", and "zasm registers".
+	Three different data types... even if they're all "int" under the hood they should probably be
+	hidden behind abstract types so that the type system can force correct usage.  Probably makes
+	sense to create a ZasmVirtual module to keep the virtual stuff segregated.
 
 * Parser rewrite.  I'm not liking the way the ocamlyacc parser is shaping up.  It's difficult to
   read, and I'm not sure it will scale up well to more complicated syntax.  I plan to rewrite using

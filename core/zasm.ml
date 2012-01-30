@@ -17,7 +17,7 @@ type label_t = int
 
 (* Some useful properties of Z-Machine assembly *)
 let call_vs2_max_args    = 7
-let local_variable_count = 15
+let local_variable_count = 14   (* excluding 'sp' *)
 
 
 (* Construct an assembly function identifier from a function ID. *)
@@ -41,6 +41,12 @@ type operand_t =
   | Const of int
 
 
+(* Different methods of referring to a routine to be called. *)
+type routine_t =
+  | Mapped of var_t   (* Typical method: looking up a function by its internal ZML id *)
+  | AsmName of string (* Directly injecting the name of an assembly routine *)
+
+
 (* We need only a small subset of Z-machine opcodes in order to implement
  * [Function.expr_t].  In the future, it may prove useful to use additional
  * opcodes to handle special cases.  It probably won't matter for performance,
@@ -56,7 +62,7 @@ type t =
   | JUMP of label_t
   | LOAD of reg_t * reg_t
   | STORE of reg_t * operand_t
-  | CALL_VS2 of var_t * (operand_t list) * reg_t
+  | CALL_VS2 of routine_t * (operand_t list) * reg_t
   | RET of operand_t
   | Label of label_t
 
@@ -112,7 +118,7 @@ let rec compile_virtual_aux
       (state, head_asm @ tail_asm)
   | Function.Apply (g, g_args) ->
       let arg_regs = List.map (fun v -> Reg (VMap.find v state.reg_of_var)) g_args in
-      (state, [CALL_VS2 (g, arg_regs, result_reg)])
+      (state, [CALL_VS2 (Mapped g, arg_regs, result_reg)])
 
 (* Compile a binary integer operation. *)
 and compile_virtual_binary_int state result_reg f a b = (
@@ -153,7 +159,12 @@ and compile_virtual_if state result_reg is_cmp_equality a b e1 e2 =
 
 (* Compile a function to "virtual" Z5 assembly.  This is Z-machine assembly
  * with an infinite number of registers (aka "local variables") available. *)
-let compile_virtual (f_args : var_t list) (f_body : Function.expr_t) : (reg_t list) * (t list) =
+let compile_virtual
+  (f_args : var_t list)         (* Function arguments *)
+  (f_body : Function.expr_t)    (* Function body *)
+    : (reg_t list) *            (* Virtual registers assigned to function arguments *)
+      (t list) *                (* Generated virtual assembly *)
+      int =                     (* Count of virtual registers used (0 to N-1) *)
   (* call_vs2 supports 0 through 7 arguments.  Implementing functions with
    * more than seven arguments will require heap-allocating a reference array
    * as storage for the extra args. *)
@@ -168,7 +179,9 @@ let compile_virtual (f_args : var_t list) (f_body : Function.expr_t) : (reg_t li
     f_args
   in
   let (state, assembly) = compile_virtual_aux init_state result_reg f_body in
-  (List.map (fun x -> VMap.find x state.reg_of_var) f_args, assembly @ [RET (Reg result_reg)])
+  (List.map (fun x -> VMap.find x state.reg_of_var) f_args,
+    assembly @ [RET (Reg result_reg)],
+    state.reg_count)
 
 
 
@@ -574,24 +587,248 @@ let rec subst_registers acc subst (asm : t list) : t list =
       List.rev acc
 
 
-(* Allocate registers for the block of assembly. *)
-let alloc_registers (arg_regs : reg_t list) (asm : t list) : t list =
-  let g = make_interference_graph asm in
-  match color_graph arg_regs local_variable_count g with
+type spill_t = {
+  reg_offsets : int IMap.t;   (* Offsets into spill array where the virtual registers are stored *)
+  root_ref    : int           (* Register used for holding the root reference to the spill array *)
+}
+
+
+let inject_loads ~spilled_reg_offsets ~reg_count ~reg ~root_ref =
+  if IMap.mem reg spilled_reg_offsets then
+    let load_asm = [
+      CALL_VS2 (AsmName "zml_deref_root", [Reg root_ref], reg_count);
+      CALL_VS2 (AsmName "zml_array_get",
+        [Reg reg_count; Const (IMap.find reg spilled_reg_offsets)], reg_count)
+    ] in
+    (reg_count + 1, Reg reg_count, load_asm)
+  else
+    (reg_count, Reg reg, [])
+
+
+let inject_stores ~spilled_reg_offsets ~reg_count ~reg ~root_ref =
+  if IMap.mem reg spilled_reg_offsets then
+    (* Leave a register available for the destructive write which
+     * precedes this injected assembly *)
+    let written_reg = reg_count in
+    let reg_count   = reg_count + 1 in
+    let store_asm = [
+      CALL_VS2 (AsmName "zml_deref_root", [Reg root_ref], reg_count);
+      CALL_VS2 (AsmName "zml_array_set",
+        [Reg reg_count; Const (IMap.find reg spilled_reg_offsets); Reg written_reg], written_reg)
+    ] in
+    (reg_count + 1, written_reg, store_asm)
+  else
+    (reg_count, reg, [])
+
+
+(* Rewrite an arbitrary virtual zasm instruction, inserting loads and stores as necessary to ensure
+ * that spilled registers are accessed via the spill array. *)
+let spill_instruction 
+  ~(asm_acc : t list)                 (* Accumulator for assembly: output is prepended to this *)
+  ~(spilled_reg_offsets : int IMap.t) (* Locations of spilled regs in spill array *)
+  ~(reg_count : int)                  (* Count of virtual assembly registers used by this asm *)
+  ~(root_ref : int)                   (* Virtual reg which holds the spill array root reference *)
+  ~(make_inst : operand_t list -> reg_t option -> t)
+                                      (* Constructor for the instruction currently being analyzed *)
+  ~(ops : operand_t list)             (* Instruction operands (instruction treats them as read-only) *)
+  ~(res_opt : reg_t option)           (* Result register, if appropriate *)
+    : int                             (* Updated count of virtual assembly registers *)
+    * t list =                        (* Resulting assembly, reverse-prepended to [asm_acc] *)
+  let (reg_count, ops, injected_load_asm) = List.fold_left
+    (fun (reg_count, ops_acc, injected_asm_acc) op ->
+      match op with
+      | Reg reg ->
+          let (reg_count, op, injected) =
+            inject_loads ~spilled_reg_offsets ~reg_count ~reg ~root_ref
+          in
+          (reg_count, ops_acc @ [op], injected_asm_acc @ injected)
+      | Const _ ->
+          (reg_count, ops_acc @ [op], injected_asm_acc))
+    (reg_count, [], [])
+    ops
+  in
+  let (reg_count, res_opt, injected_store_asm) =
+    match res_opt with
+    | None ->
+        (reg_count, res_opt, [])
+    | Some res ->
+        let (reg_count, res, inject) =
+          inject_stores ~spilled_reg_offsets ~reg_count ~reg:res ~root_ref
+        in
+        (reg_count, Some res, inject)
+  in
+  let replacement_inst = make_inst ops res_opt in
+  let replacement_asm  = injected_load_asm @ [replacement_inst] @ injected_store_asm in
+  (reg_count, List.rev_append replacement_asm asm_acc)
+
+
+(* Convenience function which invokes [spill_instruction] for the common case of
+ * binary operations (e.g. ADD, SUB, etc.). *)
+let spill_bin_op ~asm_acc ~spilled_reg_offsets ~reg_count ~root_ref
+    ~(make_inst : operand_t -> operand_t -> reg_t -> t) ~op1 ~op2 ~res =
+  let si_make_inst op_list res_opt =
+    match (op_list, res_opt) with
+    | ([op1; op2], Some res) ->
+        make_inst op1 op2 res
+    | _ ->
+        assert false
+  in
+  spill_instruction ~asm_acc ~spilled_reg_offsets ~reg_count ~root_ref
+    ~make_inst:si_make_inst ~ops:[op1; op2] ~res_opt:(Some res)
+
+
+(* Modify the given virtual assembly so that it allocates an array off the
+ * heap to use for storage for the [spill_regs]. *)
+let spill_to_heap
+  (spill_regs : VSet.t) (* Virtual registers to be moved to heap storage *)
+  (root_ref : reg_t)    (* Virtual register to use for the spill array reference *)
+  (reg_count : int)     (* Count of virtual registers used by this assembly (0 to N-1) *)
+  (asm : t list)        (* Assembly to be modified *)
+    : t list =          (* Modified assembly *)
+  (* Assign spilled registers to slots in the spill array, in sorted order *)
+  let (_, spilled_reg_offsets) = VSet.fold
+    (fun x (i, m) -> (i + 1, IMap.add x i m))
+    spill_regs
+    (0, IMap.empty)
+  in
+  let header =  [
+    CALL_VS2 (AsmName "zml_alloc_value_array", [Const (VSet.cardinal spill_regs); Const 0], root_ref);
+    CALL_VS2 (AsmName "zml_register_root", [Reg root_ref], root_ref)
+  ] in
+  (* Insert loads and stores whenever the spilled registers are accessed. *)
+  let (reg_count, modified_asm) = List.fold_left
+    (fun (reg_count, asm_acc) inst ->
+      match inst with
+      | ADD (op1, op2, r) ->
+          spill_bin_op ~asm_acc ~spilled_reg_offsets ~reg_count ~root_ref
+            ~make_inst:(fun x y z -> ADD (x, y, z)) ~op1 ~op2 ~res:r
+      | SUB (op1, op2, r) ->
+          spill_bin_op ~asm_acc ~spilled_reg_offsets ~reg_count ~root_ref
+            ~make_inst:(fun x y z -> SUB (x, y, z)) ~op1 ~op2 ~res:r
+      | MUL (op1, op2, r) ->
+          spill_bin_op ~asm_acc ~spilled_reg_offsets ~reg_count ~root_ref
+            ~make_inst:(fun x y z -> MUL (x, y, z)) ~op1 ~op2 ~res:r
+      | DIV (op1, op2, r) ->
+          spill_bin_op ~asm_acc ~spilled_reg_offsets ~reg_count ~root_ref
+            ~make_inst:(fun x y z -> DIV (x, y, z)) ~op1 ~op2 ~res:r
+      | MOD (op1, op2, r) ->
+          spill_bin_op ~asm_acc ~spilled_reg_offsets ~reg_count ~root_ref
+            ~make_inst:(fun x y z -> MOD (x, y, z)) ~op1 ~op2 ~res:r
+      | JE (op1, op2, label) ->
+          let make_inst op_list res_opt =
+            match (op_list, res_opt) with
+            | ([o1; o2], None) ->
+                JE (o1, o2, label)
+            | _ ->
+                assert false
+          in
+          spill_instruction ~asm_acc ~spilled_reg_offsets ~reg_count ~root_ref
+            ~make_inst ~ops:[op1; op2] ~res_opt:None
+      | JL (op1, op2, label) ->
+          let make_inst op_list res_opt =
+            match (op_list, res_opt) with
+            | ([o1; o2], None) ->
+                JL (o1, o2, label)
+            | _ ->
+                assert false
+          in
+          spill_instruction ~asm_acc ~spilled_reg_offsets ~reg_count ~root_ref
+            ~make_inst ~ops:[op1; op2] ~res_opt:None
+      | LOAD (reg1, reg2) ->
+          let make_inst op_list res_opt =
+            match (op_list, res_opt) with
+            | ([Reg r1], Some r2) ->
+                LOAD (r1, r2)
+            | _ ->
+                assert false
+          in
+          spill_instruction ~asm_acc ~spilled_reg_offsets ~reg_count ~root_ref
+            ~make_inst ~ops:[Reg reg1] ~res_opt:(Some reg2)
+      | CALL_VS2 (routine, op_list, result_reg) ->
+          let make_inst ops res_opt =
+            match res_opt with
+            | Some res ->
+                CALL_VS2 (routine, ops, res)
+            | None ->
+                assert false
+          in
+          spill_instruction ~asm_acc ~spilled_reg_offsets ~reg_count ~root_ref
+            ~make_inst ~ops:op_list ~res_opt:(Some result_reg)
+      | STORE (reg1, op2) ->
+          let make_inst op_list res_opt =
+            match (op_list, res_opt) with
+            | ([o2], Some r1) ->
+                STORE (r1, o2)
+            | _ ->
+                assert false
+          in
+          spill_instruction ~asm_acc ~spilled_reg_offsets ~reg_count ~root_ref
+            ~make_inst ~ops:[op2] ~res_opt:(Some reg1)
+      | RET op ->
+          begin match op with
+          | Const _ ->
+              (reg_count,
+                RET op ::
+                CALL_VS2 (AsmName "zml_unregister_root", [Reg root_ref], root_ref) ::
+                asm_acc)
+          | Reg r ->
+              let (reg_count, op, load_asm) =
+                inject_loads ~spilled_reg_offsets:spilled_reg_offsets ~reg_count ~reg:r ~root_ref
+              in
+              (reg_count,
+                RET op ::
+                CALL_VS2 (AsmName "zml_unregister_root", [Reg root_ref], root_ref) ::
+                (List.rev_append load_asm asm_acc))
+          end
+      | (JUMP label as inst) | (Label label as inst) ->
+          (reg_count, inst :: asm_acc))
+    (reg_count, [])
+    asm
+  in
+  header @ (List.rev modified_asm)
+
+
+(* Allocate registers for the block of assembly.  The assembly is modified
+ * to reflect the register allocation; if necessary, the assembly is also
+ * modified to spill registers to a heap-allocated value array. *)
+let rec alloc_registers
+  ?(spilled_regs=VSet.empty)      (* Virtual registers which have been spilled previously *)
+  (precolored_regs : reg_t list)  (* Virtual registers which must be assigned to specific zasm regs *)
+  (asm : t list)                  (* Virtual asm to be analyzed *)
+  (reg_count : int)               (* Count of virtual regs used by the asm *)
+    : t list =
+  let (modified_asm, precolored_regs) =
+    if VSet.is_empty spilled_regs then
+      (asm, precolored_regs)
+    else
+      (* The spill_to_heap implementation uses an additional register to store a reference
+       * to the spill array, and this reference is maintained across the entire function body.
+       * It doesn't make sense to ever consider spilling this register, so we'll precolor it. *)
+      let root_ref  = reg_count in
+      let reg_count = reg_count + 1 in
+      (spill_to_heap spilled_regs root_ref reg_count asm, precolored_regs @ [root_ref])
+  in
+  let g = make_interference_graph modified_asm in
+  match color_graph precolored_regs local_variable_count g with
   | Colored color_map ->
       begin try
-        subst_registers [] color_map asm
+        subst_registers [] color_map modified_asm
       with Not_found ->
         assert false
       end
-  | Spilled _ ->
-      (* TODO *)
-      assert false
-      
+  | Spilled new_spilled_regs ->
+      (* Note: intentionally passing the original assembly here, not the assembly modified with heap
+       * spilling operations.  Only the set of spilled registers changes as we recurse.  (The
+       * introduction of heap management operations adds additional register pressure which may lead
+       * to further register spilling.  If that happens, we don't want to allocate a *second* spill
+       * array... we just want to restart the heap spilling with a *larger* spill array.) *)
+      let spilled_regs = VSet.union spilled_regs new_spilled_regs in
+      alloc_registers ~spilled_regs precolored_regs asm reg_count
+
 
 (* Compile a function, yielding an assembly listing for the function body. *)
 let compile (f_args : var_t list) (f_body : Function.expr_t) : t list =
-  let virtual_args, virtual_asm = compile_virtual f_args f_body in
-  alloc_registers virtual_args virtual_asm
+  let virtual_args, virtual_asm, virtual_reg_count = compile_virtual f_args f_body in
+  alloc_registers virtual_args virtual_asm virtual_reg_count
 
 

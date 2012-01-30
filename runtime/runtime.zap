@@ -309,7 +309,7 @@ small_array:
 
 .FUNCT zml_alloc_value_list, init_val, next_cell
    ; Allocate a list cell, which shall contain the given initial
-   ; reference value and pointer to the next cell.  The cell contents shall
+   ; value and pointer to the next cell.  The cell contents shall
    ; be treated as a pointer (not a value).
    ;
    ; param init_val: initial value to store in cell
@@ -321,8 +321,8 @@ small_array:
 
 
 .FUNCT zml_alloc_ref_list, init_val, next_cell
-   ; Allocate a list cell, which shall contain the given initial value
-   ; and pointer to the next cell.  The cell contents shall be treated
+   ; Allocate a list cell, which shall contain the given initial reference
+   ; value and pointer to the next cell.  The cell contents shall be treated
    ; as a value (not a pointer).
    ;
    ; param init_val: initial value to store in cell
@@ -1076,6 +1076,18 @@ out_of_memory:
    storew __heap_start root_ref root_freelist_head
    store 'root_freelist_head root_ref
    rtrue
+
+
+.FUNCT zml_deref_root, root
+   ; Dereferences a root reference.
+   ;
+   ; param root: root identifier obtained from zml_register_root.
+   ;
+   ; Returns: word pointer to the heap-allocated block which was registered
+   ;    as a root (heap relative).  This pointer remains valid only until
+   ;    the next call to zml_alloc_*.
+   loadw __heap_start root -> sp
+   ret sp
 
 
 .FUNCT __zml_mark_roots, i, roots_table_boundary, heap_ref

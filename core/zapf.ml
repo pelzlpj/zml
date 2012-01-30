@@ -52,8 +52,13 @@ let rec string_of_asm
         | STORE (r, a) ->
             sprintf "  store 'r%d %s" r (string_of_operand a)
         | CALL_VS2 (f, reg_args, r) ->
+            let fun_name_str =
+              match f with
+              | Mapped f_id -> asm_fun_name_of_id program f_id
+              | AsmName s   -> s
+            in
             sprintf "  call_vs2 %s %s -> r%d"
-              (asm_fun_name_of_id program f)
+              fun_name_str
               (String.concat " " (List.map string_of_operand reg_args))
               r
         | RET a ->
