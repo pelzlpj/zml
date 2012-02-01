@@ -32,7 +32,8 @@ type expr_t =
   | IfLess of var_t * var_t * expr_t * expr_t (* Branching on integer ordering test *)
   | Var of var_t                              (* Bound variable *)
   | Let of var_t * expr_t * expr_t            (* Let binding for a value type *)
-  | Apply of var_t * (var_t list)             (* Function application *)
+  | ApplyKnown of var_t * (var_t list)        (* Application of known function *)
+  | ApplyUnknown of var_t * (var_t list)      (* Application of unknown function *)
 
 
 type function_def_t =
@@ -72,8 +73,10 @@ let rec string_of_expr (expr : expr_t) : string =
   | Var a -> VarID.to_string a
   | Let (a, b, c) ->
       sprintf "let %s = %s in\n%s" (VarID.to_string a) (string_of_expr b) (string_of_expr c)
-  | Apply (f, args) ->
+  | ApplyKnown (f, args) ->
       sprintf "apply(%s %s)" (VarID.to_string f) (String.concat " " (List.map VarID.to_string args))
+  | ApplyUnknown (f, args) ->
+      sprintf "apply_uk(%s %s)" (VarID.to_string f) (String.concat " " (List.map VarID.to_string args))
 
 
 let string_of_function id (f : function_t) : string =
@@ -174,9 +177,11 @@ let rec extract_functions_aux
       let () = add_function_def f_id {f_name; f_impl = ExtFunc f_ext_impl} in
       extract_functions_aux recur_ids f_scope_expr
   | Normal.Apply (f_id, f_args) ->
-      (* TODO: detect known functions versus unknown functions versus closures *)
-      let () = assert ((VMap.mem f_id !function_defs) || (VSet.mem f_id recur_ids)) in
-      Apply (f_id, f_args)
+      (* TODO: closure detection *)
+      if (VMap.mem f_id !function_defs) || (VSet.mem f_id recur_ids) then
+        ApplyKnown (f_id, f_args)
+      else
+        ApplyUnknown (f_id, f_args)
 
 
 (* Rewrite a normalized expression tree as a list of function definitions and an entry point. *)

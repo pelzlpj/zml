@@ -7,3 +7,4 @@ lexer.ml
 parser.output
 parser.mli
 zml
+*.cmo

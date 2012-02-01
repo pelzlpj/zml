@@ -96,19 +96,27 @@ end
 (* Identifiers for labels placed within a function body *)
 type label_t = int
 
+
+(* Different methods of referring to a routine to be called. *)
+type 'a routine_t =
+  | Mapped of var_t     (* Typical method: looking up a function by its internal ZML id *)
+  | AsmName of string   (* Directly injecting the name of an assembly routine *)
+
+
+type const_t =
+  | ConstNum of int           (* Plain old integer used as an operand. *)
+  | MappedRoutine of var_t    (* Typical form for calling a routine by internal ZML id *)
+  | AsmRoutine of string      (* Directly injecting the name of an assembly routine *)
+
+
 (* Most opcodes accept either variable identifiers (v0-v255) or integer constants as operands.
  *
  * The type parameter allows us to differentiate between instructions operating on the virtual
  * register set, and instructions operating on the physical register set. *)
 type 'a operand_t =
   | Reg of 'a
-  | Const of int
+  | Const of const_t
 
-
-(* Different methods of referring to a routine to be called. *)
-type routine_t =
-  | Mapped of var_t   (* Typical method: looking up a function by its internal ZML id *)
-  | AsmName of string (* Directly injecting the name of an assembly routine *)
 
 
 (* We need only a small subset of Z-machine opcodes in order to implement
@@ -126,7 +134,7 @@ type 'a t =
   | JUMP of label_t
   | LOAD of 'a * 'a
   | STORE of 'a * 'a operand_t
-  | CALL_VS2 of routine_t * ('a operand_t list) * 'a
+  | CALL_VS2 of 'a operand_t * ('a operand_t list) * 'a
   | RET of 'a operand_t
   | Label of label_t
 
@@ -168,7 +176,7 @@ let rec compile_virtual_aux
       (* For now we're treating unit as integer zero.  It shouldn't matter. *)
       compile_virtual_aux state result_reg (Function.Int 0)
   | Function.Int i ->
-      (state, [STORE (result_reg, Const i)])
+      (state, [STORE (result_reg, Const (ConstNum i))])
   | Function.Add (a, b) ->
       compile_virtual_binary_int state result_reg (fun x y z -> ADD (x, y, z)) a b
   | Function.Sub (a, b) ->
@@ -181,13 +189,21 @@ let rec compile_virtual_aux
       compile_virtual_binary_int state result_reg (fun x y z -> MOD (x, y, z)) a b
   | Function.Neg a ->
       (* Negation is implemented as subtraction from zero. *)
-      (state, [SUB (Const 0, Reg (VMap.find a state.reg_of_var), result_reg)])
+      (state, [SUB (Const (ConstNum 0), Reg (VMap.find a state.reg_of_var), result_reg)])
   | Function.IfEq (a, b, e1, e2) ->
       compile_virtual_if state result_reg true a b e1 e2
   | Function.IfLess (a, b, e1, e2) ->
       compile_virtual_if state result_reg false a b e1 e2
   | Function.Var a ->
-      (state, [LOAD (VMap.find a state.reg_of_var, result_reg)])
+      begin try
+        (state, [LOAD (VMap.find a state.reg_of_var, result_reg)])
+      with Not_found ->
+        (* If there is no register associated with this variable, then
+         * this must be a reference to a function name.
+         *
+         * FIXME: this sucks and feels brittle.  The type system should encode this info. *)
+        (state, [STORE (result_reg, Const (MappedRoutine a))])
+      end
   | Function.Let (a, e1, e2) ->
       (* "let" just leads to emitting instructions for [e1] prior to [e2],
        * with the additional constraint that [a] becomes an alias for the
@@ -198,9 +214,13 @@ let rec compile_virtual_aux
       let new_binding_state = {state with reg_of_var = VMap.add a head_result_reg state.reg_of_var} in
       let (state, tail_asm) = compile_virtual_aux new_binding_state result_reg e2 in
       (state, head_asm @ tail_asm)
-  | Function.Apply (g, g_args) ->
+  | Function.ApplyKnown (g, g_args) ->
       let arg_regs = List.map (fun v -> Reg (VMap.find v state.reg_of_var)) g_args in
-      (state, [CALL_VS2 (Mapped g, arg_regs, result_reg)])
+      (state, [CALL_VS2 (Const (MappedRoutine g), arg_regs, result_reg)])
+  | Function.ApplyUnknown (g, g_args) ->
+      let g_reg = VMap.find g state.reg_of_var in
+      let arg_regs = List.map (fun v -> Reg (VMap.find v state.reg_of_var)) g_args in
+      (state, [CALL_VS2 (Reg g_reg, arg_regs, result_reg)])
 
 (* Compile a binary integer operation. *)
 and compile_virtual_binary_int state result_reg f a b = (
@@ -665,7 +685,14 @@ let rec subst_registers (acc : ZReg.t t list) (subst : ZReg.t VRegMap.t) (asm : 
   | STORE (v1, op2) :: tail ->
       subst_registers (STORE (subst_reg v1, subst_operand op2) :: acc) subst tail
   | CALL_VS2 (f_id, args, z) :: tail ->
-      subst_registers (CALL_VS2 (f_id, List.map subst_operand args, subst_reg z) :: acc) subst tail
+      let routine =
+        match f_id with
+        | Const (ConstNum i)      -> Const (ConstNum i)
+        | Const (MappedRoutine m) -> Const (MappedRoutine m)
+        | Const (AsmRoutine a)    -> Const (AsmRoutine a)
+        | Reg r                   -> Reg (subst_reg r)
+      in
+      subst_registers (CALL_VS2 (routine, List.map subst_operand args, subst_reg z) :: acc) subst tail
   | RET op :: tail ->
       subst_registers (RET (subst_operand op) :: acc) subst tail
   | (JUMP label as inst) :: tail | (Label label as inst) :: tail ->
@@ -679,9 +706,9 @@ let inject_loads ~spilled_reg_offsets ~reg_alloc_state ~reg ~root_ref =
   if VRegMap.mem reg spilled_reg_offsets then
     let (reg_alloc_state, new_reg) = VRegState.next reg_alloc_state in
     let load_asm = [
-      CALL_VS2 (AsmName "zml_deref_root", [Reg root_ref], new_reg);
-      CALL_VS2 (AsmName "zml_array_get",
-        [Reg new_reg; Const (VRegMap.find reg spilled_reg_offsets)], new_reg)
+      CALL_VS2 (Const (AsmRoutine "zml_deref_root"), [Reg root_ref], new_reg);
+      CALL_VS2 (Const (AsmRoutine "zml_array_get"),
+        [Reg new_reg; Const (ConstNum (VRegMap.find reg spilled_reg_offsets))], new_reg)
     ] in
     (reg_alloc_state, Reg new_reg, load_asm)
   else
@@ -695,9 +722,10 @@ let inject_stores ~spilled_reg_offsets ~reg_alloc_state ~reg ~root_ref =
     let (reg_alloc_state, written_reg) = VRegState.next reg_alloc_state in
     let (reg_alloc_state, deref_reg)   = VRegState.next reg_alloc_state in
     let store_asm = [
-      CALL_VS2 (AsmName "zml_deref_root", [Reg root_ref], deref_reg);
-      CALL_VS2 (AsmName "zml_array_set",
-        [Reg deref_reg; Const (VRegMap.find reg spilled_reg_offsets); Reg written_reg], written_reg)
+      CALL_VS2 (Const (AsmRoutine "zml_deref_root"), [Reg root_ref], deref_reg);
+      CALL_VS2 (Const (AsmRoutine "zml_array_set"),
+        [Reg deref_reg; Const (ConstNum (VRegMap.find reg spilled_reg_offsets));
+          Reg written_reg], written_reg)
     ] in
     (reg_alloc_state, written_reg, store_asm)
   else
@@ -775,8 +803,10 @@ let spill_to_heap
     (0, VRegMap.empty)
   in
   let header =  [
-    CALL_VS2 (AsmName "zml_alloc_value_array", [Const (VRegSet.cardinal spill_regs); Const 0], root_ref);
-    CALL_VS2 (AsmName "zml_register_root", [Reg root_ref], root_ref)
+    CALL_VS2 (Const (AsmRoutine "zml_alloc_value_array"),
+      [Const (ConstNum (VRegSet.cardinal spill_regs)); Const (ConstNum 0)], root_ref);
+    CALL_VS2 (Const (AsmRoutine "zml_register_root"),
+      [Reg root_ref], root_ref)
   ] in
   (* Insert loads and stores whenever the spilled registers are accessed. *)
   let (reg_alloc_state, modified_asm) = List.fold_left
@@ -852,7 +882,7 @@ let spill_to_heap
           | Const _ ->
               (reg_alloc_state,
                 RET op ::
-                CALL_VS2 (AsmName "zml_unregister_root", [Reg root_ref], root_ref) ::
+                CALL_VS2 (Const (AsmRoutine "zml_unregister_root"), [Reg root_ref], root_ref) ::
                 asm_acc)
           | Reg r ->
               let (reg_alloc_state, op, load_asm) =
@@ -860,7 +890,7 @@ let spill_to_heap
               in
               (reg_alloc_state,
                 RET op ::
-                CALL_VS2 (AsmName "zml_unregister_root", [Reg root_ref], root_ref) ::
+                CALL_VS2 (Const (AsmRoutine "zml_unregister_root"), [Reg root_ref], root_ref) ::
                 (List.rev_append load_asm asm_acc))
           end
       | (JUMP label as inst) | (Label label as inst) ->

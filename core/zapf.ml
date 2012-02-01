@@ -10,10 +10,12 @@ open Printf
 open Zasm
 
 
-let string_of_operand op =
+let string_of_operand_prog (program : Function.t) op =
   match op with
-  | Reg r   -> ZReg.string_of r
-  | Const c -> sprintf "%d" c
+  | Const (MappedRoutine f_id) -> asm_fun_name_of_id program f_id
+  | Const (AsmRoutine s)       -> s
+  | Const (ConstNum i)         -> string_of_int i  (* Does Zapf accept this? *)
+  | Reg reg                    -> (ZReg.string_of reg)
 
 
 (* Serialize a list of assembly instructions to a string. *)
@@ -22,6 +24,7 @@ let rec string_of_asm
   (program : Function.t)      (* description of entire program (functions + entry point) *)
   (asm : ZReg.t Zasm.t list)  (* instructions to be serialized *)
     : string =
+  let string_of_operand op = string_of_operand_prog program op in
   match asm with
   | [] ->
       String.concat "\n" (List.rev acc)
@@ -50,13 +53,8 @@ let rec string_of_asm
         | STORE (r, a) ->
             sprintf "  store '%s %s" (ZReg.string_of r) (string_of_operand a)
         | CALL_VS2 (f, reg_args, r) ->
-            let fun_name_str =
-              match f with
-              | Mapped f_id -> asm_fun_name_of_id program f_id
-              | AsmName s   -> s
-            in
             sprintf "  call_vs2 %s %s -> %s"
-              fun_name_str
+              (string_of_operand f)
               (String.concat " " (List.map string_of_operand reg_args))
               (ZReg.string_of r)
         | RET a ->

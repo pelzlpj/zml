@@ -15,10 +15,8 @@ let rec fib n =
     (fib (n - 1)) + (fib (n - 2))
 in
 let x = fib 8 in
-let y = zml_print_dec x in
-let y = zml_print_newline () in
-let y = zml_exit () in
-let y = zml_print_dec x in
-let y = zml_print_newline () in
+let y = zml_print_dec in
+let z = y x in
+let z = zml_print_newline () in
 ()
 

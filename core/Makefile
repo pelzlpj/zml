@@ -13,7 +13,7 @@ parser.cmx: parser.ml parser.cmi
 	ocamlopt -c $<
 
 clean:
-	rm -f *.cmi *.cmx *.o parser.ml lexer.ml zml
+	rm -f *.cmi *.cmo *.cmx *.o parser.ml lexer.ml zml
 
 %.cmx : %.ml
 	ocamlopt -c $<
