@@ -8,3 +8,11 @@ parser.output
 parser.mli
 zml
 *.cmo
+myocamlbuild.ml
+setup.data
+setup.ml
+_tags
+_build
+main.byte
+main.opt
+setup.log

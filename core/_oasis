@@ -1,0 +1,12 @@
+OASISFormat: 0.2
+Name:        zml
+Version:     0.1.0
+Synopsis:    ML compiler which targets the Z-Machine
+Authors:     Paul Pelzl
+License:     GPL-2.0
+
+Executable zml
+  Path:       .
+  BuildTools: ocamlbuild
+  MainIs:     main.ml
+  
