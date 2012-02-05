@@ -1,5 +1,8 @@
 * Closure conversion.
 
+* Polymorphic functions.  I had sort of planned to implement this by generating a specialized
+  implementation for every different type which actually requires an implementation.
+
 * Parser rewrite.  I'm not liking the way the ocamlyacc parser is shaping up.  It's difficult to
   read, and I'm not sure it will scale up well to more complicated syntax.  I plan to rewrite using
 	a recursive descent approach.  I want to do this rewrite *before* adding significant amounts of

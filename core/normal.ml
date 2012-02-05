@@ -35,22 +35,32 @@ module VSet = Set.Make(VarID)
 module SMap = Map.Make(String)
 
 
+type storage_type_t =
+  | Value     (* This variable holds a value (int, string, function address, etc.) *)
+  | Ref       (* This variable holds a heap reference (array or list) *)
+
+(* This is a wrapper for variables which captures information about their storage policies. *)
+type sp_var_t = {
+  storage : storage_type_t;
+  var_id  : var_t
+}
+
 type t =
-  | Unit                                            (* Unit literal *)
-  | Int of int                                      (* Integer constant *)
-  | Add of var_t * var_t                            (* Integer addition *)
-  | Sub of var_t * var_t                            (* Integer subtraction *)
-  | Mul of var_t * var_t                            (* Integer multiplication *)
-  | Div of var_t * var_t                            (* Integer division *)
-  | Mod of var_t * var_t                            (* Integer modulus *)
-  | Neg of var_t                                    (* Integer negation *)
-  | IfEq of var_t * var_t * t * t                   (* Branching on integer equality test *)
-  | IfLess of var_t * var_t * t * t                 (* Branching on integer ordering test *)
-  | Var of var_t                                    (* Bound variable *)
-  | Let of var_t * t * t                            (* Let binding for a value type *)
-  | LetFun of string * var_t * (var_t list) * t * t (* Let binding for a function definition *)
-  | External of string * var_t * string * t         (* External function definition *)
-  | Apply of var_t * (var_t list)                   (* Function application *)
+  | Unit                                                  (* Unit literal *)
+  | Int of int                                            (* Integer constant *)
+  | Add of var_t * var_t                                  (* Integer addition *)
+  | Sub of var_t * var_t                                  (* Integer subtraction *)
+  | Mul of var_t * var_t                                  (* Integer multiplication *)
+  | Div of var_t * var_t                                  (* Integer division *)
+  | Mod of var_t * var_t                                  (* Integer modulus *)
+  | Neg of var_t                                          (* Integer negation *)
+  | IfEq of var_t * var_t * t * t                         (* Branching on integer equality test *)
+  | IfLess of var_t * var_t * t * t                       (* Branching on integer ordering test *)
+  | Var of sp_var_t                                       (* Bound variable *)
+  | Let of sp_var_t * t * t                               (* Let binding for a value type *)
+  | LetFun of string * var_t * (sp_var_t list) * t * t    (* Let binding for a function definition *)
+  | External of string * var_t * string * int * t         (* External function definition *)
+  | Apply of var_t * (sp_var_t list)                      (* Function application *)
 
 
 let rec string_of_normal (ast : t) : string =
@@ -69,23 +79,25 @@ let rec string_of_normal (ast : t) : string =
   | IfLess (a, b, c, d) ->
       sprintf "if %s < %s then\n    %s\nelse\n    %s\n"
       (VarID.to_string a) (VarID.to_string b) (string_of_normal c) (string_of_normal d)
-  | Var a -> VarID.to_string a
-  | Let (a, b, c) ->
+  | Var {storage = _; var_id = a} ->
+      VarID.to_string a
+  | Let ({storage = _; var_id = a}, b, c) ->
       sprintf "let %s = %s in\n%s" (VarID.to_string a) (string_of_normal b) (string_of_normal c)
   | LetFun (name, id, args, def, use) ->
       sprintf "let %s_%s %s = %s in\n%s" name (VarID.to_string id)
-        (String.concat " " (List.map VarID.to_string args))
+        (String.concat " " (List.map (fun x -> VarID.to_string x.var_id) args))
         (string_of_normal def) (string_of_normal use)
-  | External (name, id, ext_impl, use) ->
+  | External (name, id, ext_impl, _, use) ->
       sprintf "external %s_%s = %s in\n%s" name (VarID.to_string id) ext_impl (string_of_normal use)
   | Apply (f, args) ->
-      sprintf "apply(%s %s)" (VarID.to_string f) (String.concat " " (List.map VarID.to_string args))
+      sprintf "apply(%s %s)" (VarID.to_string f)
+        (String.concat " " (List.map (fun x -> VarID.to_string x.var_id) args))
 
 
 
 (* This type is used to associate string variable names with the program-unique
  * var_t variable identifiers. *)
-type rename_context_t = var_t SMap.t
+type rename_context_t = sp_var_t SMap.t
 
 (* This ID will never be assigned; it is reserved for use by [Function.extract_functions]. *)
 let reserved_main_id = 0
@@ -103,44 +115,54 @@ let free_var () =
 
 (* Get the next free variable id, binding [name] to the id via the
  * [renames] map. *)
-let free_named_var renames name =
-  let var_id = free_var () in
-  (SMap.add name var_id renames, var_id)
+let free_named_var renames storage name =
+  let x = {storage; var_id = free_var()} in
+  (SMap.add name x renames, x)
+
+
+(* Given an arrow type, compute the number of arguments the function consumes. *)
+let rec count_arrow_type_args ?(acc=0) x =
+  match x with
+  | Type.Arrow (a, b) ->
+      count_arrow_type_args ~acc:(acc + 1) b
+  | _ ->
+      acc
 
 
 (* Insert a let expression which binds a temporary variable to an intermediate
  * expression. *)
 let rec insert_let
-  (renames : rename_context_t)      (* Associates string variable names with var_t's *)
+  (renames : rename_context_t)      (* Associates string variable names with sp_var_t's *)
+  (storage : storage_type_t)        (* Determines the type of storage to associate with the var *)
   (aexpr : Typing.aexpr_t)          (* Expression to be bound *)
-  (f : var_t -> t)                  (* Constructs an expression which uses the new binding *)
+  (f : sp_var_t -> t)               (* Constructs an expression which uses the new binding *)
     : t =
   begin match aexpr.Typing.expr with
   | Typing.Var var_name ->
       (* The lookup never fails, because the type checker verified that the variable is bound. *)
       f (SMap.find var_name renames)
   | _ ->
-      let new_var = free_var () in
+      let new_sp_var = {storage; var_id = free_var ()} in
       let eq_norm = normalize_aux renames aexpr.Typing.expr in
-      let in_norm = f new_var in
-      Let (new_var, eq_norm, in_norm)
+      let in_norm = f new_sp_var in
+      Let (new_sp_var, eq_norm, in_norm)
   end
 
 (* Convenience function: insert a pair of let expressions, as required when
- * expanding a binary operation *)
-and insert_binary_let
+ * expanding a binary operation.  The let-expressions will bind to value types. *)
+and insert_binary_let_value
   (renames : rename_context_t)
   (a : Typing.aexpr_t)
   (b : Typing.aexpr_t)
   (f : var_t -> var_t -> t)
     : t =
-  insert_let renames a
-    (fun a_binding -> insert_let renames b
-      (fun b_binding -> f a_binding b_binding))
+  insert_let renames Value a
+    (fun a_binding -> insert_let renames Value b
+      (fun b_binding -> f a_binding.var_id b_binding.var_id))
 
 (* Normalize an expression of the form "if a < b then true_val else false_val" *)
 and normalize_integer_less renames a b true_val false_val =
-  insert_binary_let renames a b
+  insert_binary_let_value renames a b
     (fun a_binding b_binding -> IfLess (a_binding, b_binding, true_val, false_val))
 
 (* Normalize a "let" or "let rec" expression. *)
@@ -152,11 +174,25 @@ and normalize_let
   (eq_expr : Typing.aexpr_t)      (* Expression being bound to a variable *)
   (in_expr : Typing.aexpr_t)      (* Expression in which the binding is in scope *)
     : t =
-  let (in_renames, binding) = free_named_var renames name.Typing.bind_name in
+  let (in_renames, binding) =
+    match name.Typing.bind_type with
+    | Type.Unit | Type.Bool | Type.Int | Type.Arrow (_, _) ->
+        free_named_var renames Value name.Typing.bind_name
+    | Type.Var _ ->
+        (* FIXME: polymorphism? *)
+        assert false
+  in
   (* Alloc fresh variables for all function arguments *)
   let (eq_renames, arg_vars) = List.fold_left
     (fun (ren, vars) arg ->
-      let (ren, new_arg_var) = free_named_var ren arg.Typing.bind_name in
+      let (ren, new_arg_var) =
+        match arg.Typing.bind_type with
+        | Type.Unit | Type.Bool | Type.Int | Type.Arrow (_, _) ->
+            free_named_var ren Value arg.Typing.bind_name
+        | Type.Var _ ->
+            (* FIXME: polymorphism? *)
+            assert false
+      in
       (ren, vars @ [new_arg_var]))
     (* If this is a "let rec" form, then the function name may
      * recur in the "=" expression *)
@@ -167,7 +203,7 @@ and normalize_let
   let in_norm = normalize_aux in_renames in_expr.Typing.expr in
   match args with
   | [] -> Let (binding, eq_norm, in_norm)
-  | _  -> LetFun (name.Typing.bind_name, binding, arg_vars, eq_norm, in_norm)
+  | _  -> LetFun (name.Typing.bind_name, binding.var_id, arg_vars, eq_norm, in_norm)
 
 (* Convert a type-annotated syntax tree into the normalized form. *)
 and normalize_aux
@@ -182,7 +218,7 @@ and normalize_aux
   | Typing.Int n ->
       Int n
   | Typing.Eq (a, b) ->
-      insert_binary_let renames a b
+      insert_binary_let_value renames a b
         (fun a_binding b_binding ->
           match a.Typing.inferred_type with
           | Type.Unit ->
@@ -197,7 +233,7 @@ and normalize_aux
               (* Type variables shall be eliminated *)
               assert false)
   | Typing.Neq (a, b) ->
-      insert_binary_let renames a b
+      insert_binary_let_value renames a b
         (fun a_binding b_binding ->
           match a.Typing.inferred_type with
           | Type.Unit ->
@@ -223,34 +259,34 @@ and normalize_aux
       (* a > b --> b < a *)
       normalize_integer_less renames b a (Int 1) (Int 0)
   | Typing.Add (a, b) ->
-      insert_binary_let renames a b
+      insert_binary_let_value renames a b
         (fun a_binding b_binding -> Add (a_binding, b_binding))
   | Typing.Sub (a, b) ->
-      insert_binary_let renames a b
+      insert_binary_let_value renames a b
         (fun a_binding b_binding -> Sub (a_binding, b_binding))
   | Typing.Mul (a, b) ->
-      insert_binary_let renames a b
+      insert_binary_let_value renames a b
         (fun a_binding b_binding -> Mul (a_binding, b_binding))
   | Typing.Div (a, b) ->
-      insert_binary_let renames a b
+      insert_binary_let_value renames a b
         (fun a_binding b_binding -> Div (a_binding, b_binding))
   | Typing.Mod (a, b) ->
-      insert_binary_let renames a b
+      insert_binary_let_value renames a b
         (fun a_binding b_binding -> Mod (a_binding, b_binding))
   | Typing.Not a ->
       (* Let the optimizer deal with it... *)
-      insert_let renames a
+      insert_let renames Value a
         (fun a_binding ->
-          let one_binding = free_var () in
+          let one_binding = {storage = Value; var_id = free_var ()} in
           Let (one_binding, Int 1,
-            IfEq (a_binding, one_binding, Int 0, Int 1)))
+            IfEq (a_binding.var_id, one_binding.var_id, Int 0, Int 1)))
   | Typing.Neg a ->
-      insert_let renames a
-        (fun a_binding -> Neg a_binding)
+      insert_let renames Value a
+        (fun a_binding -> Neg a_binding.var_id)
   | Typing.If ({Typing.expr = Typing.Eq (a, b); _}, true_expr, false_expr) ->
       let true_norm  = normalize_aux renames true_expr.Typing.expr in
       let false_norm = normalize_aux renames false_expr.Typing.expr in
-      insert_binary_let renames a b
+      insert_binary_let_value renames a b
         (fun a_binding b_binding ->
           match a.Typing.inferred_type with
           | Type.Unit ->
@@ -267,7 +303,7 @@ and normalize_aux
   | Typing.If ({Typing.expr = Typing.Neq (a, b); _}, true_expr, false_expr) ->
       let true_norm  = normalize_aux renames true_expr.Typing.expr in
       let false_norm = normalize_aux renames false_expr.Typing.expr in
-      insert_binary_let renames a b
+      insert_binary_let_value renames a b
         (fun a_binding b_binding ->
           match a.Typing.inferred_type with
           | Type.Unit ->
@@ -303,25 +339,28 @@ and normalize_aux
   | Typing.If (cond, true_expr, false_expr) ->
       let true_norm  = normalize_aux renames true_expr.Typing.expr in
       let false_norm = normalize_aux renames false_expr.Typing.expr in
-      insert_let renames cond
+      insert_let renames Value cond
         (fun cond_binding ->
-          let one_binding = free_var () in
+          let one_binding = {storage = Value; var_id = free_var ()} in
           Let (one_binding, Int 1,
-            IfEq (cond_binding, one_binding, true_norm, false_norm)))
+            IfEq (cond_binding.var_id, one_binding.var_id, true_norm, false_norm)))
   | Typing.Var var_name ->
       (* If this lookup fails, then the variable is unbound.  This shouldn't happen,
        * as the type-checker would have caught it. *)
-      let var_id = SMap.find var_name renames in
-      Var var_id
+      Var (SMap.find var_name renames)
   | Typing.Let (name, args, eq_expr, in_expr) ->
       normalize_let renames false name args eq_expr in_expr
   | Typing.LetRec (name, args, eq_expr, in_expr) ->
       normalize_let renames true name args eq_expr in_expr
   | Typing.External (name, ext_impl, in_expr) ->
-      let (in_renames, binding) = free_named_var renames name.Typing.bind_name in
+      let arg_count = count_arrow_type_args name.Typing.bind_type in
+      let () = assert (arg_count > 0) in
+      let (in_renames, binding) = free_named_var renames Value name.Typing.bind_name in
       let in_norm = normalize_aux in_renames in_expr.Typing.expr in
-      External (name.Typing.bind_name, binding, ext_impl, in_norm)
+      External (name.Typing.bind_name, binding.var_id, ext_impl, arg_count, in_norm)
   | Typing.Apply (fun_expr, fun_args) ->
+      (* The function arguments are, in general, entire expression trees.  So wrap
+       * each argument in a let-binding. *)
       let arg_bindings = List.map
         (fun aexpr ->
           match aexpr.Typing.expr with
@@ -329,7 +368,15 @@ and normalize_aux
               (* No let-binding required; argument already has simple variable form *)
               (SMap.find var_name renames, None)
           | _ ->
-              (free_var (), Some (normalize_aux renames aexpr.Typing.expr)))
+              let storage =
+                match aexpr.Typing.inferred_type with
+                | Type.Unit | Type.Bool | Type.Int _ | Type.Arrow (_, _) ->
+                    Value
+                | Type.Var _ ->
+                    (* FIXME: polymorphic type? *)
+                    assert false
+              in
+              ({storage; var_id = free_var ()}, Some (normalize_aux renames aexpr.Typing.expr)))
         fun_args
       in
       let arg_ids = List.map fst arg_bindings in
@@ -339,8 +386,8 @@ and normalize_aux
           | Some arg_norm -> Let (arg_var, arg_norm, acc)
           | None          -> acc)
         arg_bindings
-        (insert_let renames fun_expr
-          (fun fun_binding -> Apply (fun_binding, arg_ids)))
+        (insert_let renames Value fun_expr
+          (fun fun_binding -> Apply (fun_binding.var_id, arg_ids)))
 
 
 (* For the sake of readability, flatten nested let-bindings.  For example,

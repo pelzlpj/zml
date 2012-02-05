@@ -125,21 +125,23 @@ let rec has_free_variables (f_args : var_t list) (f_body : Normal.t) =
   | Normal.Add (a, b) | Normal.Sub (a, b) | Normal.Mul (a, b)
   | Normal.Div (a, b) | Normal.Mod (a, b) ->
       (not (List.mem a f_args)) || (not (List.mem b f_args))
-  | Normal.Neg a | Normal.Var a ->
+  | Normal.Neg a | Normal.Var {Normal.storage = _; Normal.var_id = a} ->
       not (List.mem a f_args)
   | Normal.IfEq (a, b, e1, e2) | Normal.IfLess (a, b, e1, e2) ->
       (not (List.mem a f_args)) || (not (List.mem b f_args)) ||
         (has_free_variables f_args e1) || (has_free_variables f_args e2)
   | Normal.Let (a, e1, e2) ->
-      (has_free_variables f_args e1) || (has_free_variables (a :: f_args) e2)
+      (has_free_variables f_args e1) || (has_free_variables (a.Normal.var_id :: f_args) e2)
   | Normal.LetFun (_, g, g_args, g_body, g_scope_expr) ->
       (* LetFun is a recursive form, so [g] is bound in the body. *)
-      (has_free_variables (List.rev_append g_args (g :: f_args)) g_body) ||
+      let g_arg_vars = List.rev_map (fun x -> x.Normal.var_id) g_args in
+      (has_free_variables (List.rev_append g_arg_vars (g :: f_args)) g_body) ||
         (has_free_variables (g :: f_args) g_scope_expr)
   | Normal.Apply (g, g_args) ->
+      let g_arg_vars = List.rev_map (fun x -> x.Normal.var_id) g_args in
       List.exists
         (fun a -> not (List.mem a f_args))
-        (g :: g_args)
+        (g :: g_arg_vars)
 
 
 
@@ -156,32 +158,35 @@ let rec extract_functions_aux
   | Normal.Div (a, b) -> Div (a, b)
   | Normal.Mod (a, b) -> Mod (a, b)
   | Normal.Neg a      -> Neg a
-  | Normal.Var a      -> Var a
+  | Normal.Var {Normal.storage = _; Normal.var_id = a} ->
+      Var a
 
   | Normal.IfEq (a, b, e1, e2) ->
       IfEq (a, b, extract_functions_aux recur_ids e1, extract_functions_aux recur_ids e2)
   | Normal.IfLess (a, b, e1, e2) ->
       IfLess (a, b, extract_functions_aux recur_ids e1, extract_functions_aux recur_ids e2)
-  | Normal.Let (a, e1, e2) ->
+  | Normal.Let ({Normal.storage = _; Normal.var_id = a}, e1, e2) ->
       Let (a, extract_functions_aux recur_ids e1, extract_functions_aux recur_ids e2)
 
   | Normal.LetFun (f_name, f_id, f_args, f_body, f_scope_expr) ->
       (* TODO: closure conversion *)
-      let () = assert (not (has_free_variables (f_id :: f_args) f_body)) in
+      let f_arg_ids = List.map (fun x -> x.Normal.var_id) f_args in
+      let () = assert (not (has_free_variables (f_id :: f_arg_ids) f_body)) in
       let recur_ids = VSet.add f_id recur_ids in
       let body_extracted = extract_functions_aux recur_ids f_body in
-      let () = add_function_def f_id {f_name; f_impl = NativeFunc (f_args, body_extracted)} in
+      let () = add_function_def f_id {f_name; f_impl = NativeFunc (f_arg_ids, body_extracted)} in
       extract_functions_aux recur_ids f_scope_expr
-  | Normal.External (f_name, f_id, f_ext_impl, f_scope_expr) ->
+  | Normal.External (f_name, f_id, f_ext_impl, arg_count, f_scope_expr) ->
       let recur_ids = VSet.add f_id recur_ids in
       let () = add_function_def f_id {f_name; f_impl = ExtFunc f_ext_impl} in
       extract_functions_aux recur_ids f_scope_expr
   | Normal.Apply (f_id, f_args) ->
       (* TODO: closure detection *)
+      let f_arg_ids = List.map (fun x -> x.Normal.var_id) f_args in
       if (VMap.mem f_id !function_defs) || (VSet.mem f_id recur_ids) then
-        ApplyKnown (f_id, f_args)
+        ApplyKnown (f_id, f_arg_ids)
       else
-        ApplyUnknown (f_id, f_args)
+        ApplyUnknown (f_id, f_arg_ids)
 
 
 (* Rewrite a normalized expression tree as a list of function definitions and an entry point. *)
