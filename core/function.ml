@@ -76,7 +76,13 @@ type t = {
 }
 
 
-let rec string_of_expr (expr : expr_t) : string =
+(* Formatting rules:
+ *  - A newline always follows "in", "then", and "else", as well as the true/false
+ *    clauses of if/then.
+ *  - The bound expression in a Let is indented iff it is another Let or an If.
+ *  - The "true" and "false" expressions in an if-then-else are both indented. *)
+let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : expr_t) : string =
+  let make_indent level = String.make (level * chars_per_indent) ' ' in
   match expr with
   | Unit -> "()"
   | Int i -> string_of_int i
@@ -85,16 +91,38 @@ let rec string_of_expr (expr : expr_t) : string =
   | Mul (a, b) -> sprintf "(%s * %s)"  (VarID.to_string a) (VarID.to_string b)
   | Div (a, b) -> sprintf "(%s / %s)"  (VarID.to_string a) (VarID.to_string b)
   | Mod (a, b) -> sprintf "(%s %% %s)" (VarID.to_string a) (VarID.to_string b)
-  | Neg a -> sprintf "(- %s)\n" (VarID.to_string a)
-  | IfEq (a, b, c, d) ->
-      sprintf "if %s = %s then\n    %s\nelse\n    %s\n"
-      (VarID.to_string a) (VarID.to_string b) (string_of_expr c) (string_of_expr d)
-  | IfLess (a, b, c, d) ->
-      sprintf "if %s < %s then\n    %s\nelse\n    %s\n"
-      (VarID.to_string a) (VarID.to_string b) (string_of_expr c) (string_of_expr d)
-  | Var a -> VarID.to_string a
+  | Neg a -> sprintf "(- %s)" (VarID.to_string a)
+  | IfEq (a, b, c, d) | IfLess (a, b, c, d) ->
+      sprintf "%sif %s %s %s then\n%s%s\n%selse\n%s%s"
+        (make_indent indent_level)
+        (VarID.to_string a)
+        (match expr with IfEq _ -> "=" | IfLess _ -> "<" | _ -> assert false)
+        (VarID.to_string b)
+        (match c with Let _ | IfEq _ | IfLess _ -> "" | _ -> (make_indent (indent_level + 1)))
+        (string_of_expr ~indent_level:(indent_level + 1) c)
+        (make_indent indent_level)
+        (match d with Let _ | IfEq _ | IfLess _ -> "" | _ -> (make_indent (indent_level + 1)))
+        (string_of_expr ~indent_level:(indent_level + 1) d)
+  | Var a ->
+      VarID.to_string a
   | Let (a, b, c) ->
-      sprintf "let %s = %s in\n%s" (VarID.to_string a) (string_of_expr b) (string_of_expr c)
+      begin match b with
+      | Let _ | IfEq _ | IfLess _ ->
+          sprintf "%slet %s =\n%s\n%sin\n%s%s"
+            (make_indent indent_level)
+            (VarID.to_string a)
+            (string_of_expr ~indent_level:(indent_level + 1) b)
+            (make_indent indent_level)
+            (match c with | Let _ | IfEq _ | IfLess _ -> "" | _ -> (make_indent indent_level))
+            (string_of_expr ~indent_level c)
+      | _ ->
+          sprintf "%slet %s = %s in\n%s%s"
+            (make_indent indent_level)
+            (VarID.to_string a)
+            (string_of_expr ~indent_level b)
+            (match c with | Let _ | IfEq _ | IfLess _ -> "" | _ -> (make_indent indent_level))
+            (string_of_expr ~indent_level c)
+      end
   | ApplyKnown (f, args) ->
       sprintf "apply(%s %s)" (VarID.to_string f) (String.concat " " (List.map VarID.to_string args))
   | ApplyUnknown (f, args) ->
