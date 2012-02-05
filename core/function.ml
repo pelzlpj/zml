@@ -238,9 +238,9 @@ let make_closure
             let box_id = Normal.free_var () in
             Let (box_id,
               ValArrayAlloc (1, x.Normal.var_id),
-                Let (Normal.free_var (),
-                  with_ref_release box_id (RefArraySet (closure_id, ofs, box_id)),
-                  exp))
+                Let (Normal.free_var (), RefArraySet (closure_id, ofs, box_id),
+                  Let (Normal.free_var (), RefRelease box_id,
+                    exp)))
         | Normal.Ref ->
             (* Reference types are stored directly. *)
             Let (Normal.free_var (), RefArraySet (closure_id, ofs, x.Normal.var_id), exp)
@@ -253,12 +253,10 @@ let make_closure
    * that array location zero holds the closure function itself (boxed), so that the entire
    * closure can be passed around as a first-class value. *)
   let closure_func_ref = Normal.free_var () in
-  Let (closure_id,
-    Let (closure_func_ref,
-      ValArrayAlloc (1, f_id),
-        with_ref_release closure_func_ref
-          (RefArrayAlloc (1 + (SPVSet.cardinal free_vars), closure_func_ref))),
-    with_ref_release closure_id expr_with_array_init)
+  Let (closure_func_ref, ValArrayAlloc (1, f_id),
+    Let (closure_id, (RefArrayAlloc (1 + (SPVSet.cardinal free_vars), closure_func_ref)),
+      Let (Normal.free_var (), RefRelease closure_func_ref,
+        with_ref_release closure_id expr_with_array_init)))
 
 
 let rec extract_functions_aux
