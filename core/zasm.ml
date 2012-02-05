@@ -155,7 +155,10 @@ let asm_fun_name_of_id (program : Function.t) (f_id : var_t) =
     match f_def.Function.f_impl with
     | Function.NativeFunc _ ->
       sprintf "%s_%s" short_name (VarID.to_int_string f_id)
-    | Function.ExtFunc ext_impl ->
+    | Function.NativeClosure _ ->
+      (* TODO *)
+      assert false
+    | Function.ExtFunc (ext_impl, _) ->
       ext_impl
 
 
@@ -215,12 +218,36 @@ let rec compile_virtual_aux
       let (state, tail_asm) = compile_virtual_aux new_binding_state result_reg e2 in
       (state, head_asm @ tail_asm)
   | Function.ApplyKnown (g, g_args) ->
+      (* FIXME: this logic is incorrect for a curried form.  In that case, the result of this
+       * expression should be a closure reference. *)
       let arg_regs = List.map (fun v -> Reg (VMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Const (MappedRoutine g), arg_regs, result_reg)])
   | Function.ApplyUnknown (g, g_args) ->
       let g_reg = VMap.find g state.reg_of_var in
       let arg_regs = List.map (fun v -> Reg (VMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Reg g_reg, arg_regs, result_reg)])
+  | Function.RefArrayAlloc (size, init) ->
+      (* TODO *)
+      assert false
+  | Function.ValArrayAlloc (size, init) ->
+      (* TODO *)
+      assert false
+  | Function.RefRelease ref ->
+      (* TODO *)
+      assert false
+  | Function.RefArraySet (arr, index, v) ->
+      (* TODO *)
+      assert false
+  | Function.ValArraySet (arr, index, v) ->
+      (* TODO *)
+      assert false
+  | Function.RefArrayGet (arr, index) ->
+      (* TODO *)
+      assert false
+  | Function.ValArrayGet (arr, index) ->
+      (* TODO *)
+      assert false
+
 
 (* Compile a binary integer operation. *)
 and compile_virtual_binary_int state result_reg f a b = (

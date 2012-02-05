@@ -73,17 +73,21 @@ let string_of_function
   let f_def = VMap.find f_id program.Function.functions in
   match f_def.Function.f_impl with
   | Function.NativeFunc (f_args, f_body) ->
-    let asm = compile f_args f_body in
-    let local_var_names = (List.map (sprintf "r%d") (list_range 15)) in
-    let local_vars_str = String.concat ", " local_var_names in
-    let funct_header = sprintf ".FUNCT %s, %s\n"
-      (asm_fun_name_of_id program f_id)
-      local_vars_str
-    in
-    let funct_body = string_of_asm program asm in
-    funct_header ^ funct_body
+      let f_untyped_args = List.map (fun x -> x.Normal.var_id) f_args in
+      let asm = compile f_untyped_args f_body in
+      let local_var_names = (List.map (sprintf "r%d") (list_range 15)) in
+      let local_vars_str = String.concat ", " local_var_names in
+      let funct_header = sprintf ".FUNCT %s, %s\n"
+        (asm_fun_name_of_id program f_id)
+        local_vars_str
+      in
+      let funct_body = string_of_asm program asm in
+      funct_header ^ funct_body
+  | Function.NativeClosure _ ->
+      (* TODO *)
+      assert false
   | Function.ExtFunc _ ->
-    ""
+      ""
 
 
 (* Compile all functions, and serialize them to Zapf-compatible assembly. *)
@@ -93,9 +97,12 @@ let string_of_program (program : Function.t) : string =
     (fun f_id f_def acc ->
       match f_def.Function.f_impl with
       | Function.NativeFunc _ -> 
-        (string_of_function program f_id) :: acc
+          (string_of_function program f_id) :: acc
+      | Function.NativeClosure _ ->
+          (* TODO *)
+          assert false
       | Function.ExtFunc _ ->
-        acc)
+          acc)
     program.Function.functions
     []
   in
