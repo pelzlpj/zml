@@ -45,11 +45,12 @@ type expr_t =
   | ApplyUnknown of var_t * (var_t list)      (* Application of unknown function *)
   | RefArrayAlloc of int * var_t              (* Construct an array for storage of ref types *)
   | ValArrayAlloc of int * var_t              (* Construct an array for storage of value types *)
+  | RefClone of var_t                         (* Create a new reference to a heap structure. *)
   | RefRelease of var_t                       (* Drop ownership of a reference *)
-  | RefArraySet of var_t * int * var_t        (* Store a reference in a ref array (arr, index, ref) *)
-  | ValArraySet of var_t * int * var_t        (* Store a value in a value array (arr, index, val) *)
-  | RefArrayGet of var_t * int                (* Get a reference from a ref array *)
-  | ValArrayGet of var_t * int                (* Get a value from a value array *)
+  | RefArraySet of var_t * var_t * var_t      (* Store a reference in a ref array (arr, index, ref) *)
+  | ValArraySet of var_t * var_t * var_t      (* Store a value in a value array (arr, index, val) *)
+  | RefArrayGet of var_t * var_t              (* Get a reference from a ref array *)
+  | ValArrayGet of var_t * var_t              (* Get a value from a value array *)
 
 
 (* FIXME: might want to drop the types on these args... *)
@@ -127,20 +128,22 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : expr_t) :
       sprintf "apply(%s %s)" (VarID.to_string f) (String.concat " " (List.map VarID.to_string args))
   | ApplyUnknown (f, args) ->
       sprintf "apply_uk(%s %s)" (VarID.to_string f) (String.concat " " (List.map VarID.to_string args))
-  | RefArrayAlloc (n, a) ->
-      sprintf "ref_array_alloc(%d, %s)" n (VarID.to_string a)
-  | ValArrayAlloc (n, a) ->
-      sprintf "val_array_alloc(%d, %s)" n (VarID.to_string a)
+  | RefArrayAlloc (a, b) ->
+      sprintf "ref_array_alloc(%s, %s)" (VarID.to_string a) (VarID.to_string b)
+  | ValArrayAlloc (a, b) ->
+      sprintf "val_array_alloc(%s, %s)" (VarID.to_string a) (VarID.to_string b)
+  | RefClone a ->
+      sprintf "clone(%s)" (VarID.to_string a)
   | RefRelease a ->
       sprintf "release(%s)" (VarID.to_string a)
-  | RefArraySet (a, n, b) ->
-      sprintf "ref_array_set(%s, %d, %s)" (VarID.to_string a) n (VarID.to_string b)
-  | ValArraySet (a, n, b) ->
-      sprintf "val_array_set(%s, %d, %s)" (VarID.to_string a) n (VarID.to_string b)
-  | RefArrayGet (a, n) ->
-      sprintf "ref_array_get(%s, %d)" (VarID.to_string a) n
-  | ValArrayGet (a, n) ->
-      sprintf "val_array_get(%s, %d)" (VarID.to_string a) n
+  | RefArraySet (a, b, c) ->
+      sprintf "ref_array_set(%s, %s, %s)" (VarID.to_string a) (VarID.to_string b) (VarID.to_string c)
+  | ValArraySet (a, b, c) ->
+      sprintf "val_array_set(%s, %s, %s)" (VarID.to_string a) (VarID.to_string b) (VarID.to_string c)
+  | RefArrayGet (a, b) ->
+      sprintf "ref_array_get(%s, %s)" (VarID.to_string a) (VarID.to_string b)
+  | ValArrayGet (a, b) ->
+      sprintf "val_array_get(%s, %s)" (VarID.to_string a) (VarID.to_string b)
 
 
 
@@ -191,12 +194,19 @@ let add_function_def (id : var_t) (def : function_t) : unit =
   function_defs := VMap.add id def !function_defs
 
 
-(* Wrap a variable id with a Value type identifier. *)
 let value_var a = {Normal.storage = Normal.Value; Normal.var_id = a}
+let ref_var a   = {Normal.storage = Normal.Ref;   Normal.var_id = a}
+
 
 (* Compute the set of all free variables found in a function definition.  (If the set
  * is nonempty, we'll have to do closure conversion. *)
 let rec free_variables ?(acc=SPVSet.empty) (f_args : SPVSet.t) (f_body : Normal.t) : SPVSet.t =
+  let accum_free vars =
+    List.fold_left
+      (fun acc x -> if SPVSet.mem x f_args then acc else SPVSet.add x acc)
+      acc
+      vars
+  in
   match f_body with
   | Normal.Unit | Normal.Int _ | Normal.External _ ->
       acc
@@ -204,23 +214,18 @@ let rec free_variables ?(acc=SPVSet.empty) (f_args : SPVSet.t) (f_body : Normal.
   | Normal.Div (a, b) | Normal.Mod (a, b) ->
       let a_val = value_var a in
       let b_val = value_var b in
-      let a_free  = if SPVSet.mem a_val f_args then acc    else SPVSet.add a_val acc in
-      let ab_free = if SPVSet.mem b_val f_args then a_free else SPVSet.add b_val a_free in
-      ab_free
+      accum_free [a_val; b_val]
   | Normal.Neg a ->
-      let a_val = value_var a in
-      if SPVSet.mem a_val f_args then acc else SPVSet.add a_val acc
+      let a_val = value_var a in accum_free [a_val]
   | Normal.Var a ->
-      if SPVSet.mem a f_args then acc else SPVSet.add a acc
+      accum_free [a]
   | Normal.IfEq (a, b, e1, e2) | Normal.IfLess (a, b, e1, e2) ->
       let a_val = value_var a in
       let b_val = value_var b in
       let e1_free = free_variables ~acc f_args e1 in
       let e2_free = free_variables ~acc f_args e2 in
       let e1_e2_free = SPVSet.union e1_free e2_free in
-      let a_free  = if SPVSet.mem a_val f_args then e1_e2_free else SPVSet.add a_val e1_e2_free in
-      let ab_free = if SPVSet.mem b_val f_args then a_free     else SPVSet.add b_val a_free in
-      ab_free
+      SPVSet.union e1_e2_free (accum_free [a_val; b_val])
   | Normal.Let (a, e1, e2) ->
       let e1_free = free_variables ~acc f_args e1 in
       let e2_free = free_variables ~acc (SPVSet.add a f_args) e2 in
@@ -236,26 +241,57 @@ let rec free_variables ?(acc=SPVSet.empty) (f_args : SPVSet.t) (f_body : Normal.
       let g_scope_free = free_variables ~acc (SPVSet.add (value_var g) f_args) g_scope_expr in
       SPVSet.union g_body_free g_scope_free
   | Normal.Apply (g, g_args) ->
-      List.fold_left
-        (fun free x -> if SPVSet.mem x f_args then free else SPVSet.add x free)
-        acc
-        ((value_var g) :: g_args)
+      accum_free ((value_var g) :: g_args)
+  | Normal.RefArrayAlloc (a, b) ->
+      let a_val = value_var a in
+      let b_val = ref_var b in
+      accum_free [a_val; b_val]
+  | Normal.ValArrayAlloc (a, b) ->
+      let a_val = value_var a in
+      let b_val = value_var b in
+      accum_free [a_val; b_val]
+  | Normal.RefClone a ->
+      let a_val = ref_var a in accum_free [a_val]
+  | Normal.RefArraySet (a, b, c) ->
+      let a_val = ref_var a in
+      let b_val = value_var b in
+      let c_val = ref_var c in
+      accum_free [a_val; b_val; c_val]
+  | Normal.ValArraySet (a, b, c) ->
+      let a_val = ref_var a in
+      let b_val = value_var b in
+      let c_val = value_var c in
+      accum_free [a_val; b_val; c_val]
+  | Normal.RefArrayGet (a, b) | Normal.ValArrayGet (a, b) ->
+      let a_val = ref_var a in
+      let b_val = value_var b in
+      accum_free [a_val; b_val]
 
 
-(* Insert code to drop a reference after evaluation of a subexpression. *)
-let with_ref_release (var : var_t) (expr : expr_t) =
-  let x = Normal.free_var () in
-  Let (x, expr, Let (Normal.free_var (), RefRelease var, Var x))
+
+(* Insert RefRelease calls to clean up the list of [refs] before evaluating the [expr]. *)
+let rec insert_refs_release refs expr =
+  match refs with
+  | []          -> expr
+  | ref :: tail -> Let (Normal.free_var (), RefRelease ref, insert_refs_release tail expr)
 
 
 (* Construct a closure.  The code which defines the function is transformed into code which
- * allocates an array and stores its free variables into the array. *)
+ * allocates an array and stores its free variables into the array.
+ *
+ * FIXME: the [scope_expr] needs to be modified so that references to [f_id] are
+ * replaced with the [closure_id].  The difficulty here is that [f_id] is a value type
+ * but [closure_id] is a reference type.  The most important case to consider is when [f_id] is
+ * assigned to a variable for later use.
+ *
+ * This problem can probably be reduced if all functions are boxed as a closure the moment they get
+ * bound to a variable (causing "unknown function" calls). *)
 let make_closure 
   (f_id : var_t)           (* Function identifier *)
   (closure_id : var_t)     (* Identifier to use for the closure storage array *)
   (free_vars : SPVSet.t)   (* Set of free variables to close over *)
-  (scope_expr : expr_t)    (* Expression in which the closure will be in scope *)
-    =
+  (scope_expr : Normal.t)  (* Expression in which the closure will be in scope *)
+    : Normal.t =
   (* Prefix the expression with all the array_set operations necessary to init the closure *)
   let (_, expr_with_array_init) = SPVSet.fold
     (fun x (ofs, exp) ->
@@ -263,71 +299,98 @@ let make_closure
         match x.Normal.storage with
         | Normal.Value ->
             (* Value types are boxed so they can be stored in a reference array. *)
-            let box_id = Normal.free_var () in
-            Let (box_id,
-              ValArrayAlloc (1, x.Normal.var_id),
-                Let (Normal.free_var (), RefArraySet (closure_id, ofs, box_id),
-                  Let (Normal.free_var (), RefRelease box_id,
-                    exp)))
+            let size_id = value_var (Normal.free_var ()) in
+            let box_id  = ref_var   (Normal.free_var ()) in
+            let ofs_id  = value_var (Normal.free_var ()) in
+            Normal.Let (size_id, Normal.Int 1,
+              Normal.Let (box_id,
+                Normal.ValArrayAlloc (size_id.Normal.var_id, x.Normal.var_id),
+                Normal.Let (ofs_id, Normal.Int ofs,
+                  Normal.Let (value_var (Normal.free_var ()),
+                    Normal.RefArraySet (closure_id, ofs_id.Normal.var_id, box_id.Normal.var_id),
+                    exp))))
         | Normal.Ref ->
             (* Reference types are stored directly. *)
-            Let (Normal.free_var (), RefArraySet (closure_id, ofs, x.Normal.var_id), exp)
+            let ofs_id = value_var (Normal.free_var ()) in
+            Normal.Let (ofs_id, Normal.Int ofs,
+              Normal.Let (value_var (Normal.free_var ()),
+                Normal.RefArraySet (closure_id, ofs_id.Normal.var_id, x.Normal.var_id),
+                exp))
       in
       (ofs + 1, array_set_expr))
     free_vars
     (1, scope_expr)
   in
-  (* Now prepend the closure array allocation, and append the closure array release.  Note
-   * that array location zero holds the closure function itself (boxed), so that the entire
-   * closure can be passed around as a first-class value. *)
-  let closure_func_ref = Normal.free_var () in
-  Let (closure_func_ref, ValArrayAlloc (1, f_id),
-    Let (closure_id, (RefArrayAlloc (1 + (SPVSet.cardinal free_vars), closure_func_ref)),
-      Let (Normal.free_var (), RefRelease closure_func_ref,
-        with_ref_release closure_id expr_with_array_init)))
+  (* Now prepend the closure array allocation.  Note that array location zero holds the closure
+   * function itself (boxed), so that the entire closure can be passed around as a first-class
+   * value. *)
+  let closure_func_ref = ref_var   (Normal.free_var ()) in
+  let box_size_id      = value_var (Normal.free_var ()) in
+  let closure_size_id  = value_var (Normal.free_var ()) in
+  Normal.Let (box_size_id, Normal.Int 1,
+    Normal.Let (closure_func_ref, Normal.ValArrayAlloc (box_size_id.Normal.var_id, f_id),
+      Normal.Let (closure_size_id, Normal.Int (1 + (SPVSet.cardinal free_vars)),
+        Normal.Let (ref_var closure_id,
+          Normal.RefArrayAlloc (closure_size_id.Normal.var_id, closure_func_ref.Normal.var_id),
+          expr_with_array_init))))
 
 
+
+(* Extract function bodies from the expression tree, and simultaneously insert code to implicitly release
+ * references as they fall out of scope. *)
 let rec extract_functions_aux
+  (local_refs : var_t list)   (* List of live references which must be released at end-of-expr *)
   (recur_ids : SPVSet.t)      (* Function ids which could be referenced recursively in this expr *)
   (normal_expr : Normal.t)    (* Expression to process *)
     : expr_t =                (* Resulting expression, with functions extracted *)
   match normal_expr with
-  | Normal.Unit       -> Unit
-  | Normal.Int x      -> Int x
-  | Normal.Add (a, b) -> Add (a, b)
-  | Normal.Sub (a, b) -> Sub (a, b)
-  | Normal.Mul (a, b) -> Mul (a, b)
-  | Normal.Div (a, b) -> Div (a, b)
-  | Normal.Mod (a, b) -> Mod (a, b)
-  | Normal.Neg a      -> Neg a
+  | Normal.Unit       -> insert_refs_release local_refs Unit
+  | Normal.Int x      -> insert_refs_release local_refs (Int x)
+  | Normal.Add (a, b) -> insert_refs_release local_refs (Add (a, b))
+  | Normal.Sub (a, b) -> insert_refs_release local_refs (Sub (a, b))
+  | Normal.Mul (a, b) -> insert_refs_release local_refs (Mul (a, b))
+  | Normal.Div (a, b) -> insert_refs_release local_refs (Div (a, b))
+  | Normal.Mod (a, b) -> insert_refs_release local_refs (Mod (a, b))
+  | Normal.Neg a      -> insert_refs_release local_refs (Neg a)
   | Normal.Var {Normal.storage = _; Normal.var_id = a} ->
-      Var a
+      (* When the value of an expression is a variable containing a reference type,
+       * we allow the reference to escape without being released.  The containing
+       * expression takes ownership of this reference. *)
+      let other_refs = List.filter (fun ref -> ref <> a) local_refs in
+      insert_refs_release other_refs (Var a)
 
   | Normal.IfEq (a, b, e1, e2) ->
-      IfEq (a, b, extract_functions_aux recur_ids e1, extract_functions_aux recur_ids e2)
+      IfEq (a, b, extract_functions_aux local_refs recur_ids e1,
+        extract_functions_aux local_refs recur_ids e2)
   | Normal.IfLess (a, b, e1, e2) ->
-      IfLess (a, b, extract_functions_aux recur_ids e1, extract_functions_aux recur_ids e2)
-  | Normal.Let ({Normal.storage = _; Normal.var_id = a}, e1, e2) ->
-      Let (a, extract_functions_aux recur_ids e1, extract_functions_aux recur_ids e2)
+      IfLess (a, b, extract_functions_aux local_refs recur_ids e1,
+        extract_functions_aux local_refs recur_ids e2)
+
+  | Normal.Let ({Normal.storage = Normal.Ref; Normal.var_id = a}, e1, e2) ->
+      (* When binding to a reference type, we will have to release the reference at end-of-scope. *)
+      Let (a, extract_functions_aux [] recur_ids e1,
+        extract_functions_aux (a :: local_refs) recur_ids e2)
+  | Normal.Let ({Normal.storage = Normal.Value; Normal.var_id = a}, e1, e2) ->
+      Let (a, extract_functions_aux [] recur_ids e1, extract_functions_aux local_refs recur_ids e2)
 
   | Normal.LetFun (f_name, f_id, f_args, f_body, f_scope_expr) ->
       let recur_ids = SPVSet.add (value_var f_id) recur_ids in
       let f_arg_set = List.fold_left (fun acc x -> SPVSet.add x acc) SPVSet.empty f_args in
       let free_vars = free_variables (SPVSet.union recur_ids f_arg_set) f_body in
-      let body_extracted = extract_functions_aux recur_ids f_body in
+      let body_extracted = extract_functions_aux [] recur_ids f_body in
       if SPVSet.is_empty free_vars then
         let () = add_function_def f_id {f_name; f_impl = NativeFunc (f_args, body_extracted)} in
-        extract_functions_aux recur_ids f_scope_expr
+        extract_functions_aux local_refs recur_ids f_scope_expr
       else
         (* Closure conversion. *)
         let closure_id = Normal.free_var () in
+        let closure_expr = make_closure f_id closure_id free_vars f_scope_expr in
         let () = add_function_def f_id {f_name; f_impl = NativeClosure (closure_id, f_args, body_extracted)} in
-        let scope_extracted = extract_functions_aux recur_ids f_scope_expr in
-        make_closure f_id closure_id free_vars scope_extracted
+        extract_functions_aux local_refs recur_ids closure_expr
   | Normal.External (f_name, f_id, f_ext_impl, f_arg_count, f_scope_expr) ->
       let recur_ids = SPVSet.add (value_var f_id) recur_ids in
       let () = add_function_def f_id {f_name; f_impl = ExtFunc (f_ext_impl, f_arg_count)} in
-      extract_functions_aux recur_ids f_scope_expr
+      extract_functions_aux local_refs recur_ids f_scope_expr
   | Normal.Apply (f_id, f_args) ->
       (* TODO: closure detection *)
       let f_arg_ids = List.map (fun x -> x.Normal.var_id) f_args in
@@ -336,11 +399,32 @@ let rec extract_functions_aux
       else
         ApplyUnknown (f_id, f_arg_ids)
 
+  | Normal.RefArrayAlloc (size, init) ->
+      insert_refs_release local_refs (RefArrayAlloc (size, init))
+  | Normal.ValArrayAlloc (size, init) ->
+      insert_refs_release local_refs (ValArrayAlloc (size, init))
+  | Normal.RefClone a ->
+      (* Make sure we clone the reference prior to releasing it *)
+      let clone_ref = Normal.free_var () in
+      Let (clone_ref, RefClone a, insert_refs_release local_refs (Var clone_ref))
+  | Normal.RefArraySet (arr, index, x) ->
+      (* Make sure we perform array operations prior ot releasing the array *)
+      Let (Normal.free_var (), RefArraySet (arr, index, x), insert_refs_release local_refs Unit)
+  | Normal.ValArraySet (arr, index, x) ->
+      (* Make sure we perform array operations prior ot releasing the array *)
+      Let (Normal.free_var (), ValArraySet (arr, index, x), insert_refs_release local_refs Unit)
+  | Normal.RefArrayGet (arr, index) ->
+      (* Make sure we perform array operations prior ot releasing the array *)
+      Let (Normal.free_var (), RefArrayGet (arr, index), insert_refs_release local_refs Unit)
+  | Normal.ValArrayGet (arr, index) ->
+      (* Make sure we perform array operations prior ot releasing the array *)
+      Let (Normal.free_var (), ValArrayGet (arr, index), insert_refs_release local_refs Unit)
+
 
 (* Rewrite a normalized expression tree as a list of function definitions and an entry point. *)
 let extract_functions (expr : Normal.t) : t =
   let () = reset_function_defs () in
-  let toplevel_expr = extract_functions_aux SPVSet.empty expr in
+  let toplevel_expr = extract_functions_aux [] SPVSet.empty expr in
   (* Construct the program entry point, [zml_main : unit -> unit] *)
   let () = add_function_def Normal.reserved_main_id
     {f_name = "zml_main"; f_impl = NativeFunc ([], toplevel_expr)}

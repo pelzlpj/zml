@@ -46,21 +46,28 @@ type sp_var_t = {
 }
 
 type t =
-  | Unit                                                  (* Unit literal *)
-  | Int of int                                            (* Integer constant *)
-  | Add of var_t * var_t                                  (* Integer addition *)
-  | Sub of var_t * var_t                                  (* Integer subtraction *)
-  | Mul of var_t * var_t                                  (* Integer multiplication *)
-  | Div of var_t * var_t                                  (* Integer division *)
-  | Mod of var_t * var_t                                  (* Integer modulus *)
-  | Neg of var_t                                          (* Integer negation *)
-  | IfEq of var_t * var_t * t * t                         (* Branching on integer equality test *)
-  | IfLess of var_t * var_t * t * t                       (* Branching on integer ordering test *)
-  | Var of sp_var_t                                       (* Bound variable *)
-  | Let of sp_var_t * t * t                               (* Let binding for a value type *)
-  | LetFun of string * var_t * (sp_var_t list) * t * t    (* Let binding for a function definition *)
-  | External of string * var_t * string * int * t         (* External function definition *)
-  | Apply of var_t * (sp_var_t list)                      (* Function application *)
+  | Unit                                                (* Unit literal *)
+  | Int of int                                          (* Integer constant *)
+  | Add of var_t * var_t                                (* Integer addition *)
+  | Sub of var_t * var_t                                (* Integer subtraction *)
+  | Mul of var_t * var_t                                (* Integer multiplication *)
+  | Div of var_t * var_t                                (* Integer division *)
+  | Mod of var_t * var_t                                (* Integer modulus *)
+  | Neg of var_t                                        (* Integer negation *)
+  | IfEq of var_t * var_t * t * t                       (* Branching on integer equality test *)
+  | IfLess of var_t * var_t * t * t                     (* Branching on integer ordering test *)
+  | Var of sp_var_t                                     (* Bound variable *)
+  | Let of sp_var_t * t * t                             (* Let binding for a value type *)
+  | LetFun of string * var_t * (sp_var_t list) * t * t  (* Let binding for a function definition *)
+  | External of string * var_t * string * int * t       (* External function definition *)
+  | Apply of var_t * (sp_var_t list)                    (* Function application *)
+  | RefArrayAlloc of var_t * var_t                      (* Construct an array for storage of ref types *)
+  | ValArrayAlloc of var_t * var_t                      (* Construct an array for storage of val types *)
+  | RefClone of var_t                                   (* Create a new reference to a heap structure *)
+  | RefArraySet of var_t * var_t * var_t                (* Store a reference in a ref array (arr, index, ref) *)
+  | ValArraySet of var_t * var_t * var_t                (* Store a value in a value array (arr, index, val) *)
+  | RefArrayGet of var_t * var_t                        (* Get a reference from a ref array *)
+  | ValArrayGet of var_t * var_t                        (* Get a value from a value array *)
 
 
 let rec string_of_normal (ast : t) : string =
@@ -92,6 +99,20 @@ let rec string_of_normal (ast : t) : string =
   | Apply (f, args) ->
       sprintf "apply(%s %s)" (VarID.to_string f)
         (String.concat " " (List.map (fun x -> VarID.to_string x.var_id) args))
+  | RefArrayAlloc (size, init) ->
+      sprintf "ref_array(%d %s)" size (VarID.to_string init)
+  | ValArrayAlloc (size, init) ->
+      sprintf "val_array(%d %s)" size (VarID.to_string init)
+  | RefClone (ref) ->
+      sprintf "clone(%s)" (VarID.to_string ref)
+  | RefArraySet (arr, index, x) ->
+      sprintf "ref_arr_set(%s %d %s)" (VarID.to_string arr) index (VarID.to_string x)
+  | ValArraySet (arr, index, x) ->
+      sprintf "val_arr_set(%s %d %s)" (VarID.to_string arr) index (VarID.to_string x)
+  | RefArrayGet (arr, index) ->
+      sprintf "ref_arr_get(%s %d)" (VarID.to_string arr) index
+  | ValArrayGet (arr, index) ->
+      sprintf "val_arr_get(%s %d)" (VarID.to_string arr) index
 
 
 

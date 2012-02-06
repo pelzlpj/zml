@@ -232,6 +232,9 @@ let rec compile_virtual_aux
   | Function.ValArrayAlloc (size, init) ->
       (* TODO *)
       assert false
+  | Function.RefClone ref ->
+      (* TODO *)
+      assert false
   | Function.RefRelease ref ->
       (* TODO *)
       assert false

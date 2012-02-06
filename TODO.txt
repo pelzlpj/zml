@@ -1,7 +1,14 @@
 * Closure conversion.
 
-* Polymorphic functions.  I had sort of planned to implement this by generating a specialized
-  implementation for every different type which actually requires an implementation.
+* Refactor internal representation of certain expressions.  At this point it looks like there's a
+  lot of code that could be removed by coalescing all the integer manipulators into the following:
+    | UnaryIntOp  of (unary_operation, operand)
+    | BinaryIntOp of (binary_operation, operand1, operand2)
+
+* Polymorphic functions.  I had sort of planned to implement this by code duplication: generating a
+  specialized implementation for every different instantiation type.
+
+* Tail call elimination.
 
 * Parser rewrite.  I'm not liking the way the ocamlyacc parser is shaping up.  It's difficult to
   read, and I'm not sure it will scale up well to more complicated syntax.  I plan to rewrite using
