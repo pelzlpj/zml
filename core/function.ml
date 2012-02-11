@@ -5,7 +5,7 @@
  *
  *    * Function invocations, represented by Normal.Apply instances, are
  *      transformed into direct calls of known functions (when possible)
- *      or runtime dispatch to unknown functions (in general).
+ *      or runtime dispatch to closures (in general).
  *
  *    * The program representation is transformed from an expression tree into a
  *      list of function definitions along with an entry point.
@@ -20,23 +20,6 @@ type var_t         = Normal.var_t
 type binary_op_t   = Normal.binary_op_t
 type unary_op_t    = Normal.unary_op_t
 type conditional_t = Normal.conditional_t
-
-type storage_type_t =
-  | Value     (* This variable holds a value (int, string, function address, etc.) *)
-  | Ref       (* This variable holds a heap reference (array or list) *)
-
-(* This is a wrapper for variables which captures information about their storage policies. *)
-type sp_var_t = {
-  storage : storage_type_t;
-  var_id  : var_t
-}
-
-module SPVarID = struct
-  type t      = sp_var_t
-  let compare = Pervasives.compare
-end
-
-module SPVSet = Set.Make(SPVarID)
 
 
 type expr_t =
@@ -200,22 +183,16 @@ let add_function_def (id : var_t) (def : function_t) : unit =
   function_defs := VMap.add id def !function_defs
 
 
-(*
-let value_var a = {Normal.storage = Normal.Value; Normal.var_id = a}
-let ref_var a   = {Normal.storage = Normal.Ref;   Normal.var_id = a}
-*)
 
-
-(* Compute the set of all free variables found in a function definition.  (If the set
- * is nonempty, we'll have to do closure conversion. *)
-let rec free_variables ?(acc=VSet.empty) (f_args : VSet.t) (f_body : Normal.t) : VSet.t =
+(* Compute the set of all free variables found in an expression. *)
+let rec free_variables ?(acc=VSet.empty) (bound_vars : VSet.t) (expr : Normal.t) : VSet.t =
   let accum_free vars =
     List.fold_left
-      (fun acc x -> if VSet.mem x f_args then acc else VSet.add x acc)
+      (fun acc x -> if VSet.mem x bound_vars then acc else VSet.add x acc)
       acc
       vars
   in
-  match f_body with
+  match expr with
   | Normal.Unit | Normal.Int _ | Normal.External _ ->
       acc
   | Normal.BinaryOp (_, a, b) ->
@@ -225,23 +202,23 @@ let rec free_variables ?(acc=VSet.empty) (f_args : VSet.t) (f_body : Normal.t) :
   | Normal.Var a ->
       accum_free [a]
   | Normal.Conditional (_, a, b, e1, e2) ->
-      let e1_free = free_variables ~acc f_args e1 in
-      let e2_free = free_variables ~acc f_args e2 in
+      let e1_free = free_variables ~acc bound_vars e1 in
+      let e2_free = free_variables ~acc bound_vars e2 in
       let e1_e2_free = VSet.union e1_free e2_free in
       VSet.union e1_e2_free (accum_free [a; b])
   | Normal.Let (a, e1, e2) ->
-      let e1_free = free_variables ~acc f_args e1 in
-      let e2_free = free_variables ~acc (VSet.add a f_args) e2 in
+      let e1_free = free_variables ~acc bound_vars e1 in
+      let e2_free = free_variables ~acc (VSet.add a bound_vars) e2 in
       VSet.union e1_free e2_free
   | Normal.LetFun (_, g, g_args, g_body, g_scope_expr) ->
       (* LetFun is a recursive form, so [g] is bound in its body. *)
-      let f_and_g_args = List.fold_left
+      let g_bound_vars = List.fold_left
         (fun acc x -> VSet.add x acc)
-        f_args
+        bound_vars
         g_args
       in
-      let g_body_free  = free_variables ~acc (VSet.add g f_and_g_args) g_body in
-      let g_scope_free = free_variables ~acc (VSet.add g f_args) g_scope_expr in
+      let g_body_free  = free_variables ~acc (VSet.add g g_bound_vars) g_body in
+      let g_scope_free = free_variables ~acc (VSet.add g bound_vars) g_scope_expr in
       VSet.union g_body_free g_scope_free
   | Normal.Apply (g, g_args) ->
       accum_free (g :: g_args)
@@ -257,153 +234,123 @@ let rec insert_refs_release refs expr =
 *)
 
 
-(*
-(* Rewrite occurrences of [f_id] so they become occurrences of [closure_id].  This implies
- * that some parts of the expression tree will be changed from Value storage to Ref storage. *)
-let rec rewrite_closure_ref f_id closure_id (expr : Normal.t) : Normal.storage_type_t * Normal.t =
+(* Rewrite first-class occurrences of [f_id] so they become occurrences of [h_id]. *)
+let rec replace_fun_id f_id h_id (expr : Normal.t) : Normal.t =
+  let rewrite e = replace_fun_id f_id h_id e in
+  let sub x = if x = f_id then h_id else x in
   match expr with
-  | Normal.Unit
-  | Normal.Int _
-  | Normal.Add _
-  | Normal.Sub _
-  | Normal.Mul _
-  | Normal.Div _
-  | Normal.Mod _
-  | Normal.Neg _ ->
-      (Normal.Value, expr)
-  | Normal.IfEq (a, b, e1, e2) ->
-      let (st_e1, new_e1) = rewrite_closure_ref f_id closure_id e1 in
-      let (st_e2, new_e2) = rewrite_closure_ref f_id closure_id e2 in
-      let () = assert (st_e1 = st_e2) in
-      (* FIXME: we should be able to handle function equality tests, but it would need
-       * to dispatch to a structural comparison... *)
-      let () = assert (a <> f_id && b <> f_id) in
-      (st_e1, Normal.IfEq (a, b, new_e1, new_e2))
-  | Normal.IfLess (a, b, e1, e2) ->
-      let (st_e1, new_e1) = rewrite_closure_ref f_id closure_id e1 in
-      let (st_e2, new_e2) = rewrite_closure_ref f_id closure_id e2 in
-      let () = assert (st_e1 = st_e2) in
-      let () = assert (a <> f_id && b <> f_id) in
-      (st_e1, Normal.IfLess (a, b, new_e1, new_e2))
-  | Normal.Var {Normal.storage = st; Normal.var_id = g_id} ->
-      if g_id = f_id then
-        (Normal.Ref, Normal.Var {Normal.storage = Normal.Ref; Normal.var_id = closure_id})
-      else
-        (st, expr)
-  | Normal.Let ({Normal.storage = _; Normal.var_id = a}, e1, e2) ->
-      let (st_e1, new_e1) = rewrite_closure_ref f_id closure_id e1 in
-      let (st_e2, new_e2) = rewrite_closure_ref f_id closure_id e2 in
-      (st_e2, Normal.Let ({Normal.storage = st_e1; Normal.var_id = a}, new_e1, new_e2))
+  | Normal.Unit | Normal.Int _ | Normal.BinaryOp _ | Normal.UnaryOp _ ->
+      expr
+  | Normal.Conditional (cond, a, b, e1, e2) ->
+      Normal.Conditional (cond, a, b, rewrite e1, rewrite e2)
+  | Normal.Var a ->
+      Normal.Var (sub a)
+  | Normal.Let (a, e1, e2) ->
+      Normal.Let (a, rewrite e1, rewrite e2)
   | Normal.LetFun (g_name, g_id, g_args, g_body, g_scope_expr) ->
-      let () = assert (f_id <> g_id) in
-      let (_, new_body)         = rewrite_closure_ref f_id closure_id g_body in
-      let (st_scope, new_scope) = rewrite_closure_ref f_id closure_id g_scope_expr in
-      (st_scope, Normal.LetFun (g_name, g_id, g_args, new_body, new_scope))
+      Normal.LetFun (g_name, g_id, g_args, rewrite g_body, rewrite g_scope_expr)
   | Normal.External (g_name, g_id, g_asm_name, g_arg_count, g_scope_expr) ->
-      let (st_scope, new_scope) = rewrite_closure_ref f_id closure_id g_scope_expr in
-      (st_scope, Normal.External (g_name, g_id, g_asm_name, g_arg_count, new_scope))
+      Normal.External (g_name, g_id, g_asm_name, g_arg_count, rewrite g_scope_expr)
   | Normal.Apply (g_id, g_args) ->
-      let g_id   = if g_id = f_id then closure_id else g_id in
-      let g_args = List.map
-        (fun x ->
-          if x.Normal.var_id = f_id then
-            {Normal.storage = Normal.Ref; Normal.var_id = closure_id}
-          else
-            x)
-        g_args
-      in
-      (* FIXME: gah... no way to know the storage type here. *)
-      (Normal.Value, Normal.Apply (g_id, g_args))
-  | Normal.RefArrayAlloc (size, init) ->
-      (Normal.Ref, expr)
-  | Normal.ValArrayAlloc (size, init) ->
-      let () = assert (init <> f_id) in
-      (Normal.Ref, expr)
-  | Normal.RefClone ref ->
-      (Normal.Ref, expr)
-  | Normal.RefArraySet (arr, index, x) ->
-      (Normal.Value, expr)
-  | Normal.ValArraySet (arr, index, x) ->
-      let () = assert (x <> f_id) in
-      (Normal.Value, expr)
-  | Normal.RefArrayGet (arr, index) ->
-      (Normal.Ref, expr)
-  | Normal.ValArrayGet (arr, index) ->
-      (Normal.Value, expr)
-*)
+      (* Note: if [g_id] = [f_id], that's not considered a "first-class" occurrence and does not
+       * need to be rewritten.  [extract_functions_aux] will detect that a closure is being invoked
+       * if it finds [g_id] in the [function_defs] map. *)
+      Normal.Apply (g_id, List.map sub g_args)
 
-(*
+
 (* Construct a closure.  The code which defines the function is transformed into code which
- * allocates an array and stores its free variables into the array.
- *
- * FIXME: the [scope_expr] needs to be modified so that references to [f_id] are
- * replaced with the [closure_id].  The difficulty here is that [f_id] is a value type
- * but [closure_id] is a reference type.  The most important case to consider is when [f_id] is
- * assigned to a variable for later use.
- *
- * This problem can probably be reduced if all functions are boxed as a closure the moment they get
- * bound to a variable (causing "unknown function" calls). *)
+ * allocates an array and stores its free variables into the array. *)
 let make_closure 
-  (f_id : var_t)           (* Function identifier *)
-  (closure_id : var_t)     (* Identifier to use for the closure storage array *)
-  (free_vars : VSet.t)   (* Set of free variables to close over *)
-  (scope_expr : Normal.t)  (* Expression in which the closure will be in scope *)
-    : Normal.t =
+  (f_id : var_t)                      (* Function identifier *)
+  (closure_id : var_t)                (* Identifier to use for the closure array *)
+  (free_vars : VSet.t)                (* Set of free variables to close over *)
+  (scope_expr : Normal.t)             (* Expression in which the closure will be in scope *)
+  (extract_fun : Normal.t -> expr_t)  (* Method for extracting functions from a subexpression *)
+    : expr_t =
   (* Rewrite the scope_expr so it refers to the closure_id instead of f_id *)
-  let (_, scope_expr) = rewrite_closure_ref f_id closure_id scope_expr in
+  let scope_expr = replace_fun_id f_id closure_id scope_expr in
   (* Prefix the expression with all the array_set operations necessary to init the closure *)
   let (_, expr_with_array_init) = VSet.fold
     (fun x (ofs, exp) ->
       let array_set_expr =
-        match x.Normal.storage with
-        | Normal.Value ->
+        match x.VarID.tp with
+        | Type.Unit | Type.Bool _ | Type.Int _ ->
             (* Value types are boxed so they can be stored in a reference array. *)
-            let size_id = value_var (Normal.free_var ()) in
-            let box_id  = ref_var   (Normal.free_var ()) in
-            let ofs_id  = value_var (Normal.free_var ()) in
-            Normal.Let (size_id, Normal.Int 1,
-              Normal.Let (box_id,
-                Normal.ValArrayAlloc (size_id.Normal.var_id, x.Normal.var_id),
-                Normal.Let (ofs_id, Normal.Int ofs,
-                  Normal.Let (value_var (Normal.free_var ()),
-                    Normal.RefArraySet (closure_id, ofs_id.Normal.var_id, box_id.Normal.var_id),
+            let size_id = {VarID.id = Normal.free_var (); VarID.tp = Type.Int} in
+            let box_id  = {VarID.id = Normal.free_var (); VarID.tp = Type.Unit (* FIXME *)} in
+            let ofs_id  = {VarID.id = Normal.free_var (); VarID.tp = Type.Int} in
+            Let (size_id, Int 1,
+              Let (box_id, ValArrayAlloc (size_id, x),
+                Let (ofs_id, Int ofs,
+                  Let ({VarID.id = Normal.free_var (); VarID.tp = Type.Unit},
+                    RefArraySet (closure_id, ofs_id, box_id),
                     exp))))
-        | Normal.Ref ->
-            (* Reference types are stored directly. *)
-            let ofs_id = value_var (Normal.free_var ()) in
-            Normal.Let (ofs_id, Normal.Int ofs,
-              Normal.Let (value_var (Normal.free_var ()),
-                Normal.RefArraySet (closure_id, ofs_id.Normal.var_id, x.Normal.var_id),
+        | Type.Arrow _ ->
+            (* Reference types are stored directly in the closure array.  (Note that a
+             * function which appears in this context (as a free variable) is an unknown
+             * function and is therefore of reference type. *)
+            let ofs_id = {VarID.id = Normal.free_var (); VarID.tp = Type.Int} in
+            Let (ofs_id, Int ofs,
+              Let ({VarID.id = Normal.free_var (); VarID.tp = Type.Unit},
+                RefArraySet (closure_id, ofs_id, x),
                 exp))
+        | Type.Var _ ->
+            (* Polymorphic free variable? *)
+            assert false
       in
       (ofs + 1, array_set_expr))
     free_vars
-    (1, scope_expr)
+    (1, extract_fun scope_expr)
   in
   (* Now prepend the closure array allocation.  Note that array location zero holds the closure
    * function itself (boxed), so that the entire closure can be passed around as a first-class
    * value. *)
-  let closure_func_ref = ref_var   (Normal.free_var ()) in
-  let box_size_id      = value_var (Normal.free_var ()) in
-  let closure_size_id  = value_var (Normal.free_var ()) in
-  Normal.Let (box_size_id, Normal.Int 1,
-    Normal.Let (closure_func_ref, Normal.ValArrayAlloc (box_size_id.Normal.var_id, f_id),
-      Normal.Let (closure_size_id, Normal.Int (1 + (VSet.cardinal free_vars)),
-        Normal.Let (ref_var closure_id,
-          Normal.RefArrayAlloc (closure_size_id.Normal.var_id, closure_func_ref.Normal.var_id),
+  let closure_func_ref = {VarID.id = Normal.free_var (); VarID.tp = Type.Unit (* FIXME *)} in
+  let box_size_id      = {VarID.id = Normal.free_var (); VarID.tp = Type.Int} in
+  let closure_size_id  = {VarID.id = Normal.free_var (); VarID.tp = Type.Int} in
+  Let (box_size_id, Int 1,
+    Let (closure_func_ref, ValArrayAlloc (box_size_id, f_id),
+      Let (closure_size_id, Int (1 + (VSet.cardinal free_vars)),
+        Let (closure_id, RefArrayAlloc (closure_size_id, closure_func_ref),
           expr_with_array_init))))
-*)
 
 
-(* Extract function bodies from the expression tree, and simultaneously insert code to implicitly release
- * references as they fall out of scope. *)
+
+(* Determines whether or not the function with the given [f_id] is ever treated as a first-class
+ * citizen within the given [expr]--in other words, whether it is ever used in any way other than
+ * simply calling it with a full argument list. *)
+let rec is_first_class f_id (expr : Normal.t) : bool =
+  match expr with
+  | Normal.Unit | Normal.Int _ | Normal.BinaryOp _ | Normal.UnaryOp _ ->
+      false
+  | Normal.Conditional (cond, a, b, e1, e2) ->
+      (is_first_class f_id e1) || (is_first_class f_id e2)
+  | Normal.Var x ->
+      x = f_id
+  | Normal.Let (a, e1, e2) ->
+      (is_first_class f_id e1) || (is_first_class f_id e2)
+  | Normal.LetFun (g_name, g_id, g_args, g_body, g_scope_expr) ->
+      (is_first_class f_id g_body) || (is_first_class f_id g_scope_expr)
+  | Normal.External (_, _, _, _, e) ->
+      is_first_class f_id e
+  | Normal.Apply (g_id, g_args) ->
+      (* If [f_id] is passed as a function argument to [g], we will assume that [f_id] must be
+       * treated as first-class.  (In some cases higher-order functions could unbox the function
+       * argument, but that optimization would require a lot of extra analysis to figure out the
+       * contexts in which the higher-order function is invoked.) *)
+      List.mem f_id g_args
+
+
+type call_t = Known | Closure of var_t
+
+(* Extract function bodies from the expression tree, storing them in the [function_defs] map. *)
 let rec extract_functions_aux
-  (recur_ids : VSet.t)      (* Function ids which could be referenced recursively in this expr *)
+  (recur_ids : call_t VMap.t) (* Function ids which could be referenced recursively in this expr *)
   (normal_expr : Normal.t)    (* Expression to process *)
     : expr_t =                (* Resulting expression, with functions extracted *)
   match normal_expr with
-  | Normal.Unit       -> Unit
-  | Normal.Int x      -> Int x
+  | Normal.Unit                -> Unit
+  | Normal.Int x               -> Int x
   | Normal.BinaryOp (op, a, b) -> BinaryOp (op, a, b)
   | Normal.UnaryOp  (op, a)    -> UnaryOp  (op, a)
   | Normal.Var a               -> Var a
@@ -413,39 +360,59 @@ let rec extract_functions_aux
   | Normal.Let (a, e1, e2) ->
       Let (a, extract_functions_aux recur_ids e1, extract_functions_aux recur_ids e2)
   | Normal.LetFun (f_name, f_id, f_args, f_body, f_scope_expr) ->
-      let recur_ids = VSet.add f_id recur_ids in
-      let f_arg_set = List.fold_left (fun acc x -> VSet.add x acc) VSet.empty f_args in
-      let free_vars = free_variables (VSet.union recur_ids f_arg_set) f_body in
-      let body_extracted = extract_functions_aux recur_ids f_body in
-      if VSet.is_empty free_vars then
+      let f_arg_set  = List.fold_left (fun acc x -> VSet.add x acc) VSet.empty f_args in
+      let bound_vars = VSet.add f_id (VMap.fold (fun x _ acc -> VSet.add x acc) recur_ids f_arg_set) in
+      let free_vars  = free_variables bound_vars f_body in
+      if VSet.is_empty free_vars &&
+          not (is_first_class f_id f_body) &&
+          not (is_first_class f_id f_scope_expr) then
+        (* Known-function optimization.  This function is always invoked directly using a full
+         * argument set, so we don't need to box it in a closure array. *)
+        let body_extracted = extract_functions_aux (VMap.add f_id Known recur_ids) f_body in
         let () = add_function_def f_id {f_name; f_impl = NativeFunc (f_args, body_extracted)} in
         extract_functions_aux recur_ids f_scope_expr
       else
-        assert false
-        (*
         (* Closure conversion. *)
-        let closure_id = Normal.free_var () in
-        let closure_expr = make_closure f_id closure_id free_vars f_scope_expr in
+        (* FIXME: type system is not yet capable of expressing the closure array type, and won't
+         * be able to do so until record/tuple product types are integrated.  At this point in time,
+         * I don't think we actually need the type to be correct. *)
+        let closure_id = {VarID.id = Normal.free_var (); VarID.tp = Type.Unit} in
+        let body_extracted = extract_functions_aux (VMap.add f_id (Closure closure_id) recur_ids) f_body in
         let () = add_function_def f_id {f_name; f_impl = NativeClosure (closure_id, f_args, body_extracted)} in
-        extract_functions_aux recur_ids closure_expr
-        *)
+        make_closure f_id closure_id free_vars f_scope_expr (extract_functions_aux recur_ids)
   | Normal.External (f_name, f_id, f_ext_impl, f_arg_count, f_scope_expr) ->
-      let recur_ids = VSet.add f_id recur_ids in
       let () = add_function_def f_id {f_name; f_impl = ExtFunc (f_ext_impl, f_arg_count)} in
       extract_functions_aux recur_ids f_scope_expr
   | Normal.Apply (f_id, f_args) ->
-      (* TODO: closure detection *)
-      if (VMap.mem f_id !function_defs) || (VSet.mem f_id recur_ids) then
-        ApplyKnown (f_id, f_args)
-      else
-        ApplyClosure (f_id, f_args)
+      begin try
+        begin match (VMap.find f_id !function_defs).f_impl with
+        | NativeFunc _ | ExtFunc _ ->
+            ApplyKnown (f_id, f_args)
+        | NativeClosure (closure_id, closure_args, _) ->
+            ApplyClosure (closure_id, f_args)
+        end
+      with Not_found ->
+        begin try
+          (* We hit this case for recursive invocations, as the function application occurs
+           * before the function definition has been fully lifted into [function_defs]. *)
+          begin match VMap.find f_id recur_ids with
+          | Known ->
+              ApplyKnown (f_id, f_args)
+          | Closure closure_id ->
+              ApplyClosure (closure_id, f_args)
+          end
+        with Not_found ->
+          (* "Unknown" function application, i.e. call-by-function-pointer. *)
+          ApplyClosure (f_id, f_args)
+        end
+      end
 
 
 
 (* Rewrite a normalized expression tree as a list of function definitions and an entry point. *)
 let extract_functions (expr : Normal.t) : t =
   let () = reset_function_defs () in
-  let toplevel_expr = extract_functions_aux VSet.empty expr in
+  let toplevel_expr = extract_functions_aux VMap.empty expr in
   (* Construct the program entry point, [zml_main : unit -> unit] *)
   let main_id = {VarID.id = Normal.reserved_main_id; VarID.tp = Type.Arrow (Type.Unit, Type.Unit)} in
   let () = add_function_def main_id {f_name = "zml_main"; f_impl = NativeFunc ([], toplevel_expr)} in

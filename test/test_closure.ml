@@ -18,8 +18,11 @@ let z = zml_print_newline () in
 
 let make_fun x =
   let f y = x + y in
+  f
+  (*
   let g = f in
   g
+  *)
 in
 let g = make_fun 5 in
 let z = g 6 in
