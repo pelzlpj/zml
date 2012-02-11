@@ -254,7 +254,7 @@ let rec replace_fun_id f_id h_id (expr : Normal.t) : Normal.t =
   | Normal.Apply (g_id, g_args) ->
       (* Note: if [g_id] = [f_id], that's not considered a "first-class" occurrence and does not
        * need to be rewritten.  [extract_functions_aux] will detect that a closure is being invoked
-       * if it finds [g_id] in the [function_defs] map. *)
+       * if it finds [g_id] in the [callable_ids] map. *)
       Normal.Apply (g_id, List.map sub g_args)
 
 
@@ -345,9 +345,9 @@ type call_t = Known | Closure of var_t
 
 (* Extract function bodies from the expression tree, storing them in the [function_defs] map. *)
 let rec extract_functions_aux
-  (recur_ids : call_t VMap.t) (* Function ids which could be referenced recursively in this expr *)
-  (normal_expr : Normal.t)    (* Expression to process *)
-    : expr_t =                (* Resulting expression, with functions extracted *)
+  (callable_ids : call_t VMap.t)  (* Function ids which could be referenced in this expr *)
+  (normal_expr : Normal.t)        (* Expression to process *)
+    : expr_t =                    (* Resulting expression, with functions extracted *)
   match normal_expr with
   | Normal.Unit                -> Unit
   | Normal.Int x               -> Int x
@@ -355,56 +355,45 @@ let rec extract_functions_aux
   | Normal.UnaryOp  (op, a)    -> UnaryOp  (op, a)
   | Normal.Var a               -> Var a
   | Normal.Conditional (cond, a, b, e1, e2) ->
-      Conditional (cond, a, b, extract_functions_aux recur_ids e1,
-        extract_functions_aux recur_ids e2)
+      Conditional (cond, a, b, extract_functions_aux callable_ids e1,
+        extract_functions_aux callable_ids e2)
   | Normal.Let (a, e1, e2) ->
-      Let (a, extract_functions_aux recur_ids e1, extract_functions_aux recur_ids e2)
+      Let (a, extract_functions_aux callable_ids e1, extract_functions_aux callable_ids e2)
   | Normal.LetFun (f_name, f_id, f_args, f_body, f_scope_expr) ->
       let f_arg_set  = List.fold_left (fun acc x -> VSet.add x acc) VSet.empty f_args in
-      let bound_vars = VSet.add f_id (VMap.fold (fun x _ acc -> VSet.add x acc) recur_ids f_arg_set) in
+      let bound_vars = VSet.add f_id (VMap.fold (fun x _ acc -> VSet.add x acc) callable_ids f_arg_set) in
       let free_vars  = free_variables bound_vars f_body in
       if VSet.is_empty free_vars &&
           not (is_first_class f_id f_body) &&
           not (is_first_class f_id f_scope_expr) then
         (* Known-function optimization.  This function is always invoked directly using a full
          * argument set, so we don't need to box it in a closure array. *)
-        let body_extracted = extract_functions_aux (VMap.add f_id Known recur_ids) f_body in
+        let callable_ids = VMap.add f_id Known callable_ids in
+        let body_extracted = extract_functions_aux callable_ids f_body in
         let () = add_function_def f_id {f_name; f_impl = NativeFunc (f_args, body_extracted)} in
-        extract_functions_aux recur_ids f_scope_expr
+        extract_functions_aux callable_ids f_scope_expr
       else
         (* Closure conversion. *)
         (* FIXME: type system is not yet capable of expressing the closure array type, and won't
          * be able to do so until record/tuple product types are integrated.  At this point in time,
          * I don't think we actually need the type to be correct. *)
         let closure_id = {VarID.id = Normal.free_var (); VarID.tp = Type.Unit} in
-        let body_extracted = extract_functions_aux (VMap.add f_id (Closure closure_id) recur_ids) f_body in
+        let callable_ids = VMap.add f_id (Closure closure_id) callable_ids in
+        let body_extracted = extract_functions_aux callable_ids f_body in
         let () = add_function_def f_id {f_name; f_impl = NativeClosure (closure_id, f_args, body_extracted)} in
-        make_closure f_id closure_id free_vars f_scope_expr (extract_functions_aux recur_ids)
+        make_closure f_id closure_id free_vars f_scope_expr (extract_functions_aux callable_ids)
   | Normal.External (f_name, f_id, f_ext_impl, f_arg_count, f_scope_expr) ->
+      let callable_ids = VMap.add f_id Known callable_ids in
       let () = add_function_def f_id {f_name; f_impl = ExtFunc (f_ext_impl, f_arg_count)} in
-      extract_functions_aux recur_ids f_scope_expr
+      extract_functions_aux callable_ids f_scope_expr
   | Normal.Apply (f_id, f_args) ->
       begin try
-        begin match (VMap.find f_id !function_defs).f_impl with
-        | NativeFunc _ | ExtFunc _ ->
-            ApplyKnown (f_id, f_args)
-        | NativeClosure (closure_id, closure_args, _) ->
-            ApplyClosure (closure_id, f_args)
-        end
+        match VMap.find f_id callable_ids with
+        | Known              -> ApplyKnown (f_id, f_args)
+        | Closure closure_id -> ApplyClosure (closure_id, f_args)
       with Not_found ->
-        begin try
-          (* We hit this case for recursive invocations, as the function application occurs
-           * before the function definition has been fully lifted into [function_defs]. *)
-          begin match VMap.find f_id recur_ids with
-          | Known ->
-              ApplyKnown (f_id, f_args)
-          | Closure closure_id ->
-              ApplyClosure (closure_id, f_args)
-          end
-        with Not_found ->
-          (* "Unknown" function application, i.e. call-by-function-pointer. *)
-          ApplyClosure (f_id, f_args)
-        end
+        (* "Unknown" function application, i.e. call-by-function-pointer. *)
+        ApplyClosure (f_id, f_args)
       end
 
 
