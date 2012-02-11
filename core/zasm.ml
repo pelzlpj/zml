@@ -180,22 +180,22 @@ let rec compile_virtual_aux
       compile_virtual_aux state result_reg (Function.Int 0)
   | Function.Int i ->
       (state, [STORE (result_reg, Const (ConstNum i))])
-  | Function.Add (a, b) ->
-      compile_virtual_binary_int state result_reg (fun x y z -> ADD (x, y, z)) a b
-  | Function.Sub (a, b) ->
-      compile_virtual_binary_int state result_reg (fun x y z -> SUB (x, y, z)) a b
-  | Function.Mul (a, b) ->
-      compile_virtual_binary_int state result_reg (fun x y z -> MUL (x, y, z)) a b
-  | Function.Div (a, b) ->
-      compile_virtual_binary_int state result_reg (fun x y z -> DIV (x, y, z)) a b
-  | Function.Mod (a, b) ->
-      compile_virtual_binary_int state result_reg (fun x y z -> MOD (x, y, z)) a b
-  | Function.Neg a ->
+  | Function.BinaryOp (op, a, b) ->
+      let ctor =
+        match op with
+        | Normal.Add -> (fun x y z -> ADD (x, y, z))
+        | Normal.Sub -> (fun x y z -> SUB (x, y, z))
+        | Normal.Mul -> (fun x y z -> MUL (x, y, z))
+        | Normal.Div -> (fun x y z -> DIV (x, y, z))
+        | Normal.Mod -> (fun x y z -> MOD (x, y, z))
+      in
+      compile_virtual_binary_int state result_reg ctor a b
+  | Function.UnaryOp (Normal.Neg, a) ->
       (* Negation is implemented as subtraction from zero. *)
       (state, [SUB (Const (ConstNum 0), Reg (VMap.find a state.reg_of_var), result_reg)])
-  | Function.IfEq (a, b, e1, e2) ->
+  | Function.Conditional (Normal.IfEq, a, b, e1, e2) ->
       compile_virtual_if state result_reg true a b e1 e2
-  | Function.IfLess (a, b, e1, e2) ->
+  | Function.Conditional (Normal.IfLess, a, b, e1, e2) ->
       compile_virtual_if state result_reg false a b e1 e2
   | Function.Var a ->
       begin try
@@ -222,7 +222,7 @@ let rec compile_virtual_aux
        * expression should be a closure reference. *)
       let arg_regs = List.map (fun v -> Reg (VMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Const (MappedRoutine g), arg_regs, result_reg)])
-  | Function.ApplyUnknown (g, g_args) ->
+  | Function.ApplyClosure (g, g_args) ->
       let g_reg = VMap.find g state.reg_of_var in
       let arg_regs = List.map (fun v -> Reg (VMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Reg g_reg, arg_regs, result_reg)])
@@ -230,12 +230,6 @@ let rec compile_virtual_aux
       (* TODO *)
       assert false
   | Function.ValArrayAlloc (size, init) ->
-      (* TODO *)
-      assert false
-  | Function.RefClone ref ->
-      (* TODO *)
-      assert false
-  | Function.RefRelease ref ->
       (* TODO *)
       assert false
   | Function.RefArraySet (arr, index, v) ->

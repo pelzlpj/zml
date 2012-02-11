@@ -73,8 +73,7 @@ let string_of_function
   let f_def = VMap.find f_id program.Function.functions in
   match f_def.Function.f_impl with
   | Function.NativeFunc (f_args, f_body) ->
-      let f_untyped_args = List.map (fun x -> x.Normal.var_id) f_args in
-      let asm = compile f_untyped_args f_body in
+      let asm = compile f_args f_body in
       let local_var_names = (List.map (sprintf "r%d") (list_range 15)) in
       let local_vars_str = String.concat ", " local_var_names in
       let funct_header = sprintf ".FUNCT %s, %s\n"

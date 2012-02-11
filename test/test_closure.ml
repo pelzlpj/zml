@@ -22,6 +22,7 @@ let make_fun x =
   g
 in
 let g = make_fun 5 in
+let z = g 6 in
 (*
 let z = zml_print_dec (g 6) in
 let z = zml_print_newline () in
