@@ -299,17 +299,6 @@ let compile_virtual
 
 
 
-(* Node of a control flow graph. *)
-type cfg_node_t = {
-  instruction : VReg.t t;     (* Instruction under consideration *)
-  successors  : int list;     (* Offsets of instructions which may follow this one *)
-  gen         : VRegSet.t;    (* Set of variables which are read by the instruction *)
-  kill        : VRegSet.t;    (* Set of variables which are written by the instruction *)
-  live_in     : VRegSet.t;    (* Set of variables which are live immediately before this instruction *)
-  live_out    : VRegSet.t     (* Set of variables which are live immediately after this instruction *)
-}
-
-
 module Label = struct
   type t = label_t
   let compare e1 e2 = if e1 < e2 then -1 else if e1 > e2 then 1 else 0
@@ -341,113 +330,101 @@ end
 module IMap = Map.Make(Int)
 
 
-(* Initialize a single node of the control flow graph. *)
-let init_control_flow_node
-    (cfg_len : int)               (* Total number of nodes in the control flow graph *)
-    (label_offsets : int LMap.t)  (* Lookup table for mapping labels to node numbers *)
-    (i : int)                     (* Index of this node *)
-    (inst : VReg.t t)             (* Instruction for this node *)
-      : cfg_node_t =
-  let default_node = {
-    instruction = inst;
-    successors  = if i < cfg_len then [i + 1] else [];
-    gen         = VRegSet.empty;
-    kill        = VRegSet.empty;
-    live_in     = VRegSet.empty;
-    live_out    = VRegSet.empty
-  } in
-  match inst with
-  | ADD (op1, op2, v3) | SUB (op1, op2, v3) | MUL (op1, op2, v3)
-  | DIV (op1, op2, v3) | MOD (op1, op2, v3) ->
-      let binary_op_node = { default_node with kill = VRegSet.singleton v3 } in
-      begin match (op1, op2) with
-      | (Reg v1, Reg v2) ->
-          { binary_op_node with gen = vregset_of_list [v1; v2] }
-      | (Reg v1, Const _) | (Const _, Reg v1) ->
-          { binary_op_node with gen = VRegSet.singleton v1 }
-      | (Const _, Const _) ->
-          binary_op_node
-      end
+(* Compute successor nodes for any node in the control flow graph *)
+let cfn_successors label_offsets graph i =
+  let default_successors = if i + 1 < IMap.cardinal graph then [i + 1] else [] in
+  match IMap.find i graph with
+  | ADD _ | SUB _ | MUL _ | DIV _ | MOD _ | LOAD _ | STORE _ | CALL_VS2 _ | Label _ ->
+      default_successors
   | JE (op1, op2, label) | JL (op1, op2, label) ->
-      let branch_node = { default_node with
-        instruction = inst;
-        successors  = (LMap.find label label_offsets) :: default_node.successors
-      } in
+      (LMap.find label label_offsets) :: default_successors
+  | JUMP label ->
+      [LMap.find label label_offsets]
+  | RET op ->
+      []
+
+
+(* Compute inputs for any node in the control flow graph *)
+let cfn_inputs graph i =
+  match IMap.find i graph with
+  | ADD (op1, op2, _) | SUB (op1, op2, _) | MUL (op1, op2, _)
+  | DIV (op1, op2, _) | MOD (op1, op2, _)
+  | JE  (op1, op2, _) | JL  (op1, op2, _) ->
       begin match (op1, op2) with
       | (Reg v1, Reg v2) ->
-          { branch_node with gen = vregset_of_list [v1; v2] }
+          VRegSet.add v1 (VRegSet.singleton v2)
       | (Reg v1, Const _) | (Const _, Reg v1) ->
-          { branch_node with gen = VRegSet.singleton v1 }
+          VRegSet.singleton v1
       | (Const _, Const _) ->
-          branch_node
+          VRegSet.empty
       end
-  | JUMP label -> { default_node with
-      successors = [LMap.find label label_offsets];
-    }
-  | LOAD (v1, v2) -> { default_node with
-      gen  = VRegSet.singleton v1;
-      kill = VRegSet.singleton v2
-    }
-  | STORE (v1, op2) ->
-      let store_node = { default_node with kill = VRegSet.singleton v1 } in
+  | JUMP _ | Label _ ->
+      VRegSet.empty
+  | LOAD (v1, _) ->
+      VRegSet.singleton v1
+  | STORE (_, op2) ->
       begin match op2 with
-      | Reg v2 -> { store_node with gen = VRegSet.singleton v2 }
-      | Const _ -> store_node
+      | Reg v2  -> VRegSet.singleton v2
+      | Const _ -> VRegSet.empty
       end
   | CALL_VS2 (f_id, args, result) ->
       List.fold_left
         (fun acc arg ->
           match arg with
-          | Reg v   -> { acc with gen = VRegSet.add v acc.gen }
+          | Reg v   -> VRegSet.add v acc
           | Const _ -> acc)
-        { default_node with kill = VRegSet.singleton result }
+        VRegSet.empty
         args
   | RET op ->
-      let return_node = { default_node with successors = [] } in
       begin match op with
-      | Reg v   -> { return_node with gen = VRegSet.singleton v }
-      | Const _ -> return_node
+      | Reg v   -> VRegSet.singleton v
+      | Const _ -> VRegSet.empty
       end
-  | Label _ ->
-      default_node
 
 
-(* Initialize the control flow graph, in preparation for iterative solution. *)
-let init_control_flow_graph (asm : VReg.t t list) : cfg_node_t IMap.t =
-  let cfg_len = List.length asm in
+(* Compute outputs for any node in the control flow graph *)
+let cfn_outputs graph i =
+  match IMap.find i graph with
+  | ADD (_, _, v3) | SUB (_, _, v3) | MUL (_, _, v3)
+  | DIV (_, _, v3) | MOD (_, _, v3)
+  | LOAD (_, v3) | STORE (v3, _) | CALL_VS2 (_, _, v3) ->
+      VRegSet.singleton v3
+  | JE _ | JL _ | JUMP _ | RET _ | Label _ ->
+      VRegSet.empty
+
+
+module Cfg = struct
+  (* Workaround for naming collision on [t] *)
+  type 'a inst_t = 'a t
+
+  type t = {
+    cfg           : VReg.t inst_t IMap.t; (* CFG storage *)
+    label_offsets : int LMap.t            (* Lookup table for offsets where labels are located *)
+  }
+
+  module Id   = Int
+  module VSet = VRegSet
+
+  let fold f graph a      = IMap.fold (fun id node acc -> f id acc) graph.cfg a
+  let successors graph id = cfn_successors graph.label_offsets graph.cfg id
+  let inputs graph id     = cfn_inputs graph.cfg id
+  let outputs graph id    = cfn_outputs graph.cfg id
+end
+
+(* Construct a control flow graph *)
+let make_control_flow_graph (asm : VReg.t t list) : Cfg.t =
   let label_offsets = make_label_map asm in
   let (_, graph) = List.fold_left
-    (fun (i, m) inst ->
-      let node = init_control_flow_node cfg_len label_offsets i inst in
-      (i + 1, IMap.add i node m))
+    (fun (i, m) inst -> (i + 1, IMap.add i inst m))
     (0, IMap.empty)
     asm
-  in
-  graph
+  in {
+    Cfg.cfg           = graph;
+    Cfg.label_offsets = label_offsets
+  }
 
+module LSolver = Liveness.Make(Cfg)
 
-(* Solve for the sets of variables which are "live" before and after every instruction. *)
-let solve_liveness (asm : VReg.t t list) : cfg_node_t IMap.t =
-  let rec fixpoint graph =
-    let next_graph = IMap.fold
-      (fun i old_node acc ->
-        let outputs_not_killed = VRegSet.diff old_node.live_out old_node.kill in
-        let successor_inputs = List.fold_left
-          (fun acc j -> VRegSet.union acc (IMap.find j graph).live_in)
-          VRegSet.empty
-          old_node.successors
-        in
-        let new_node = { old_node with
-          live_in  = VRegSet.union old_node.gen outputs_not_killed;
-          live_out = successor_inputs
-        } in
-        IMap.add i new_node acc)
-      graph
-      IMap.empty
-    in
-    if next_graph = graph then graph else fixpoint next_graph
-  in
-  fixpoint (init_control_flow_graph asm)
 
 
 (* As VRegSet.fold, but iterating over elements of the product of the two sets. *)
@@ -505,7 +482,8 @@ let vregmap_find_first (p : VReg.t -> 'a -> bool) (m : 'a VRegMap.t) : VReg.t op
 (* Generate an interference graph for the virtual zasm assembly.  The resulting data structure maps
  * each virtual register to a set of virtual registers with which it interferes. *)
 let make_interference_graph (asm : VReg.t t list) : VRegSet.t VRegMap.t =
-  let liveness = solve_liveness asm in
+  let graph    = make_control_flow_graph asm in
+  let liveness = LSolver.solve graph in
   (* Variable [x] interferes with [y] if [x] <> [y] and there is an
    * instruction such that x \in kill and y \in live_out. *)
   let interfering_of_instruction inst_node =
@@ -521,14 +499,14 @@ let make_interference_graph (asm : VReg.t t list) : VRegSet.t VRegMap.t =
           in
           let old_out_binding = try VRegMap.find out_item kill_mapping with Not_found -> VRegSet.empty in
           VRegMap.add out_item (VRegSet.add kill_item old_out_binding) kill_mapping)
-      inst_node.kill
-      inst_node.live_out
+      inst_node.LSolver.kill
+      inst_node.LSolver.live_out
       VRegMap.empty
   in
   (* All variables should be present in the graph, regardless of whether they interfere with
    * other variables.  So start with a graph containing only vertices (no edges). *)
-  let all_variables = IMap.fold
-    (fun _ node acc -> VRegSet.union (VRegSet.union acc node.gen) node.kill)
+  let all_variables = LSolver.IdMap.fold
+    (fun _ node acc -> VRegSet.union (VRegSet.union acc node.LSolver.gen) node.LSolver.kill)
     liveness
     VRegSet.empty
   in
@@ -537,7 +515,7 @@ let make_interference_graph (asm : VReg.t t list) : VRegSet.t VRegMap.t =
     all_variables
     VRegMap.empty
   in
-  IMap.fold
+  LSolver.IdMap.fold
     (fun _ node acc -> vregmap_naive_union acc (interfering_of_instruction node))
     liveness
     graph_with_vertices
