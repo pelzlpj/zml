@@ -7,9 +7,11 @@
 
 open Printf
 
-module VarID = Normal.VarID
-module VMap  = Normal.VMap
-type var_t   = Normal.var_t
+module VarID  = Normal.VarID
+module VMap   = Normal.VMap
+module SPVar  = Function.SPVar
+module SPVMap = Function.SPVMap
+type var_t    = Normal.var_t
 
 
 (********************************************************************************
@@ -101,7 +103,7 @@ type label_t = int
 (* Constant values passed into opcodes fall into these categories *)
 type const_t =
   | ConstNum of int           (* Plain old integer used as an operand *)
-  | MappedRoutine of var_t    (* Typical form for calling a routine by internal ZML id *)
+  | MappedRoutine of SPVar.t  (* Typical form for calling a routine by internal ZML id *)
   | AsmRoutine of string      (* Directly injecting the name of an assembly routine *)
 
 
@@ -142,24 +144,23 @@ let local_variable_count = 14   (* excluding 'sp' *)
 
 
 (* Construct an assembly function identifier from a function ID. *)
-let asm_fun_name_of_id (program : Function.t) (f_id : var_t) =
-  let f_def = VMap.find f_id program.Function.functions in
+let asm_fun_name_of_id (program : Function.t) (f_id : SPVar.t) =
+  let f_def = SPVMap.find f_id program.Function.functions in
   let short_name = f_def.Function.f_name in
   if f_id = program.Function.entry_point then
     short_name
   else
     match f_def.Function.f_impl with
-    | Function.NativeFunc _
-    | Function.NativeClosure _ ->
-        sprintf "%s_%s" short_name (VarID.to_int_string f_id)
+    | Function.NativeFunc _ ->
+        sprintf "%s_%s" short_name (SPVar.to_int_string f_id)
     | Function.ExtFunc (ext_impl, _) ->
         ext_impl
 
 
 type compile_state_t = {
-  reg_of_var : VReg.t VMap.t; (* Maps Normal.t variables to virtual Z-Machine registers *)
-  reg_state  : VRegState.t;   (* Tracks virtual registers used *)
-  label_count: int            (* Number of labels emitted *)
+  reg_of_var : VReg.t SPVMap.t; (* Maps Function.t variables to virtual Z-Machine registers *)
+  reg_state  : VRegState.t;     (* Tracks virtual registers used *)
+  label_count: int              (* Number of labels emitted *)
 }
 
 let rec compile_virtual_aux
@@ -186,14 +187,14 @@ let rec compile_virtual_aux
       compile_virtual_binary_int state result_reg ctor a b
   | Function.UnaryOp (Normal.Neg, a) ->
       (* Negation is implemented as subtraction from zero. *)
-      (state, [SUB (Const (ConstNum 0), Reg (VMap.find a state.reg_of_var), result_reg)])
+      (state, [SUB (Const (ConstNum 0), Reg (SPVMap.find a state.reg_of_var), result_reg)])
   | Function.Conditional (Normal.IfEq, a, b, e1, e2) ->
       compile_virtual_if state result_reg true a b e1 e2
   | Function.Conditional (Normal.IfLess, a, b, e1, e2) ->
       compile_virtual_if state result_reg false a b e1 e2
   | Function.Var a ->
       begin try
-        (state, [LOAD (VMap.find a state.reg_of_var, result_reg)])
+        (state, [LOAD (SPVMap.find a state.reg_of_var, result_reg)])
       with Not_found ->
         (* If there is no register associated with this variable, then
          * this must be a reference to a function name.
@@ -208,15 +209,15 @@ let rec compile_virtual_aux
       let (next_state, head_result_reg) = VRegState.next state.reg_state in
       let state = {state with reg_state = next_state} in
       let (state, head_asm) = compile_virtual_aux state head_result_reg e1 in
-      let new_binding_state = {state with reg_of_var = VMap.add a head_result_reg state.reg_of_var} in
+      let new_binding_state = {state with reg_of_var = SPVMap.add a head_result_reg state.reg_of_var} in
       let (state, tail_asm) = compile_virtual_aux new_binding_state result_reg e2 in
       (state, head_asm @ tail_asm)
   | Function.ApplyKnown (g, g_args) ->
-      let arg_regs = List.map (fun v -> Reg (VMap.find v state.reg_of_var)) g_args in
+      let arg_regs = List.map (fun v -> Reg (SPVMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Const (MappedRoutine g), arg_regs, result_reg)])
   | Function.ApplyUnknown (g, g_args) ->
-      let g_reg    = VMap.find g state.reg_of_var in
-      let arg_regs = List.map (fun v -> Reg (VMap.find v state.reg_of_var)) g_args in
+      let g_reg    = SPVMap.find g state.reg_of_var in
+      let arg_regs = List.map (fun v -> Reg (SPVMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Reg g_reg, arg_regs, result_reg)])
   | Function.RefArrayAlloc (size, init) ->
       (* TODO *)
@@ -241,7 +242,7 @@ let rec compile_virtual_aux
 (* Compile a binary integer operation. *)
 and compile_virtual_binary_int state result_reg f a b = (
   state,
-  [f (Reg (VMap.find a state.reg_of_var)) (Reg (VMap.find b state.reg_of_var)) result_reg]
+  [f (Reg (SPVMap.find a state.reg_of_var)) (Reg (SPVMap.find b state.reg_of_var)) result_reg]
 )
 
 (* Compile an IfEq or IfLess form. *)
@@ -259,8 +260,8 @@ and compile_virtual_if state result_reg is_cmp_equality a b e1 e2 =
   let true_label = state.label_count in
   let exit_label = true_label + 1 in
   let branch_inst =
-    let a_reg = Reg (VMap.find a state.reg_of_var) in
-    let b_reg = Reg (VMap.find b state.reg_of_var) in
+    let a_reg = Reg (SPVMap.find a state.reg_of_var) in
+    let b_reg = Reg (SPVMap.find b state.reg_of_var) in
     if is_cmp_equality then
       [JE (a_reg, b_reg, true_label)]
     else
@@ -278,7 +279,7 @@ and compile_virtual_if state result_reg is_cmp_equality a b e1 e2 =
 (* Compile a function to "virtual" Z5 assembly.  This is Z-machine assembly
  * with an infinite number of registers (aka "local variables") available. *)
 let compile_virtual
-  (f_args : var_t list)         (* Function arguments *)
+  (f_args : SPVar.t list)       (* Function arguments *)
   (f_body : Function.expr_t)    (* Function body *)
     : (VReg.t list)             (* Virtual registers assigned to function arguments *)
     * (VReg.t t list)           (* Generated virtual assembly *)
@@ -295,13 +296,13 @@ let compile_virtual
     (fun acc arg ->
       let (next_state, new_reg) = VRegState.next acc.reg_state in
       {acc with
-        reg_of_var = VMap.add arg new_reg acc.reg_of_var;
+        reg_of_var = SPVMap.add arg new_reg acc.reg_of_var;
         reg_state  = next_state})
-    {reg_of_var = VMap.empty; reg_state; label_count = 0}
+    {reg_of_var = SPVMap.empty; reg_state; label_count = 0}
     f_args
   in
   let (state, assembly) = compile_virtual_aux init_state result_reg f_body in
-  (List.map (fun x -> VMap.find x state.reg_of_var) f_args,
+  (List.map (fun x -> SPVMap.find x state.reg_of_var) f_args,
     assembly @ [RET (Reg result_reg)],
     state.reg_state)
 
@@ -955,7 +956,7 @@ let rec alloc_registers
 
 
 (* Compile a function, yielding an assembly listing for the function body. *)
-let compile (f_args : var_t list) (f_body : Function.expr_t) : ZReg.t t list =
+let compile (f_args : SPVar.t list) (f_body : Function.expr_t) : ZReg.t t list =
   let virtual_args, virtual_asm, vreg_alloc_state = compile_virtual f_args f_body in
   alloc_registers virtual_args virtual_asm vreg_alloc_state
 

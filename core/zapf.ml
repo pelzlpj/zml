@@ -68,9 +68,9 @@ let rec string_of_asm
 (* Compile a function and serialize it to Zapf-compatible assembly. *)
 let string_of_function
   (program : Function.t)  (* description of entire program (functions + entry point) *)
-  (f_id : var_t)          (* identifier for function to be compiled *)
+  (f_id : SPVar.t)        (* identifier for function to be compiled *)
     : string =
-  let f_def = VMap.find f_id program.Function.functions in
+  let f_def = SPVMap.find f_id program.Function.functions in
   match f_def.Function.f_impl with
   | Function.NativeFunc (f_args, f_body) ->
       let asm = compile f_args f_body in
@@ -82,9 +82,6 @@ let string_of_function
       in
       let funct_body = string_of_asm program asm in
       funct_header ^ funct_body
-  | Function.NativeClosure _ ->
-      (* TODO *)
-      assert false
   | Function.ExtFunc _ ->
       ""
 
@@ -92,14 +89,11 @@ let string_of_function
 (* Compile all functions, and serialize them to Zapf-compatible assembly. *)
 let string_of_program (program : Function.t) : string =
   (* Skip over the external function declarations... *)
-  let f_strings = Function.VMap.fold
+  let f_strings = Function.SPVMap.fold
     (fun f_id f_def acc ->
       match f_def.Function.f_impl with
       | Function.NativeFunc _ -> 
           (string_of_function program f_id) :: acc
-      | Function.NativeClosure _ ->
-          (* TODO *)
-          assert false
       | Function.ExtFunc _ ->
           acc)
     program.Function.functions
