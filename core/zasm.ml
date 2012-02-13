@@ -83,7 +83,8 @@ module ZRegSet = Set.Make(ZReg)
 let zregset_of_list = List.fold_left (fun acc x -> ZRegSet.add (ZReg.of_int x) acc) ZRegSet.empty
 
 module ZRegState = struct
-  type t = int  (* The type of a state variable for allocating virtual registers *)
+  (* The type of a state variable for allocating virtual registers *)
+  type t = int
 
   (* Allocate the next available virtual register *)
   let next (state : t) : (t * ZReg.t) = (state + 1, ZReg.of_int state)
@@ -97,14 +98,9 @@ end
 type label_t = int
 
 
-(* Different methods of referring to a routine to be called. *)
-type 'a routine_t =
-  | Mapped of var_t     (* Typical method: looking up a function by its internal ZML id *)
-  | AsmName of string   (* Directly injecting the name of an assembly routine *)
-
-
+(* Constant values passed into opcodes fall into these categories *)
 type const_t =
-  | ConstNum of int           (* Plain old integer used as an operand. *)
+  | ConstNum of int           (* Plain old integer used as an operand *)
   | MappedRoutine of var_t    (* Typical form for calling a routine by internal ZML id *)
   | AsmRoutine of string      (* Directly injecting the name of an assembly routine *)
 
@@ -153,13 +149,11 @@ let asm_fun_name_of_id (program : Function.t) (f_id : var_t) =
     short_name
   else
     match f_def.Function.f_impl with
-    | Function.NativeFunc _ ->
-      sprintf "%s_%s" short_name (VarID.to_int_string f_id)
+    | Function.NativeFunc _
     | Function.NativeClosure _ ->
-      (* TODO *)
-      assert false
+        sprintf "%s_%s" short_name (VarID.to_int_string f_id)
     | Function.ExtFunc (ext_impl, _) ->
-      ext_impl
+        ext_impl
 
 
 type compile_state_t = {
@@ -218,12 +212,10 @@ let rec compile_virtual_aux
       let (state, tail_asm) = compile_virtual_aux new_binding_state result_reg e2 in
       (state, head_asm @ tail_asm)
   | Function.ApplyKnown (g, g_args) ->
-      (* FIXME: this logic is incorrect for a curried form.  In that case, the result of this
-       * expression should be a closure reference. *)
       let arg_regs = List.map (fun v -> Reg (VMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Const (MappedRoutine g), arg_regs, result_reg)])
-  | Function.ApplyClosure (g, g_args) ->
-      let g_reg = VMap.find g state.reg_of_var in
+  | Function.ApplyUnknown (g, g_args) ->
+      let g_reg    = VMap.find g state.reg_of_var in
       let arg_regs = List.map (fun v -> Reg (VMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Reg g_reg, arg_regs, result_reg)])
   | Function.RefArrayAlloc (size, init) ->

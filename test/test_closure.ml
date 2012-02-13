@@ -9,11 +9,9 @@ external zml_exit : unit -> unit = "zml_exit" in
 
 
 (*
-let a = 1 in
-let f x = a + x in
+let f x = x in
 let g = f in
-let z = zml_print_dec (f 2) in
-let z = zml_print_newline () in
+let z = g 6 in
 *)
 
 let make_fun x =
@@ -22,12 +20,5 @@ let make_fun x =
 in
 let g = make_fun 5 in
 let z = g 6 in
-let h x = x in
-let k = h in
-let z = k 3 in
-(*
-let z = zml_print_dec (g 6) in
-let z = zml_print_newline () in
-*)
 ()
 
