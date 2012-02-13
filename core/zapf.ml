@@ -10,7 +10,7 @@ open Printf
 open Zasm
 
 
-let string_of_operand_prog (program : Function.t) op =
+let string_of_operand_prog (program : Function.program_t) op =
   match op with
   | Const (MappedRoutine f_id) -> asm_fun_name_of_id program f_id
   | Const (AsmRoutine s)       -> s
@@ -20,9 +20,9 @@ let string_of_operand_prog (program : Function.t) op =
 
 (* Serialize a list of assembly instructions to a string. *)
 let rec string_of_asm
-  ?(acc=[])                   (* accumulator for the result *)
-  (program : Function.t)      (* description of entire program (functions + entry point) *)
-  (asm : ZReg.t Zasm.t list)  (* instructions to be serialized *)
+  ?(acc=[])                       (* accumulator for the result *)
+  (program : Function.program_t)  (* description of entire program (functions + entry point) *)
+  (asm : ZReg.t Zasm.t list)      (* instructions to be serialized *)
     : string =
   let string_of_operand op = string_of_operand_prog program op in
   match asm with
@@ -67,8 +67,8 @@ let rec string_of_asm
 
 (* Compile a function and serialize it to Zapf-compatible assembly. *)
 let string_of_function
-  (program : Function.t)  (* description of entire program (functions + entry point) *)
-  (f_id : SPVar.t)        (* identifier for function to be compiled *)
+  (program : Function.program_t)  (* description of entire program (functions + entry point) *)
+  (f_id : SPVar.t)                (* identifier for function to be compiled *)
     : string =
   let f_def = SPVMap.find f_id program.Function.functions in
   match f_def.Function.f_impl with
@@ -87,7 +87,7 @@ let string_of_function
 
 
 (* Compile all functions, and serialize them to Zapf-compatible assembly. *)
-let string_of_program (program : Function.t) : string =
+let string_of_program (program : Function.program_t) : string =
   (* Skip over the external function declarations... *)
   let f_strings = Function.SPVMap.fold
     (fun f_id f_def acc ->

@@ -42,29 +42,25 @@ module SPVMap = Map.Make(SPVar)
 type var_t = SPVar.t
 
 
-type expr_t =
+type t =
   | Unit                                      (* Unit literal *)
   | Int of int                                (* Integer constant *)
   | BinaryOp of binary_op_t * var_t * var_t   (* Binary integer operation *)
   | UnaryOp of unary_op_t * var_t             (* Unary integer operation *)
-  | Conditional of conditional_t * var_t * var_t * expr_t * expr_t
+  | Conditional of conditional_t * var_t * var_t * t * t
                                               (* Conditional form *)
   | Var of var_t                              (* Bound variable reference *)
-  | Let of var_t * expr_t * expr_t            (* Let binding for a value type *)
+  | Let of var_t * t * t                      (* Let binding for a value type *)
   | ApplyKnown of var_t * (var_t list)        (* Application of "known" function *)
   | ApplyUnknown of var_t * (var_t list)      (* Application of an "unknown" function (computed address) *)
-  | RefArrayAlloc of var_t * var_t            (* Construct an array for storage of ref types *)
-  | ValArrayAlloc of var_t * var_t            (* Construct an array for storage of value types *)
-  | RefArraySet of var_t * var_t * var_t      (* Store a reference in a ref array (arr, index, ref) *)
-  | ValArraySet of var_t * var_t * var_t      (* Store a value in a value array (arr, index, val) *)
-  | RefArrayGet of var_t * var_t              (* Get a reference from a ref array *)
-  | ValArrayGet of var_t * var_t              (* Get a value from a value array *)
+  | ArrayAlloc of var_t * var_t               (* Construct a new array (size, init) *)
+  | ArraySet of var_t * var_t * var_t         (* Store a ref or value in an array (arr, index, ref) *)
+  | ArrayGet of var_t * var_t                 (* Get a ref or value from an array (arr, index) *)
 
 
-(* FIXME: might want to drop the types on these args... *)
 type function_def_t =
   (* Standard function defined in ZML (function args, function body) *)
-  | NativeFunc of (var_t list) * expr_t
+  | NativeFunc of (var_t list) * t
   (* Function defined in ASM (with ASM identifier, arg count *)
   | ExtFunc of string * int
 
@@ -75,7 +71,7 @@ type function_t = {
   f_impl : function_def_t
 }
 
-type t = {
+type program_t = {
   (* List of known functions, each indexed by a unique variable id *)
   functions   : function_t SPVMap.t;
   (* Function to be invoked as program entry point (with type "unit -> unit") *)
@@ -102,7 +98,7 @@ let infer_storage (v : VarID.t) =
  *    clauses of if/then.
  *  - The bound expression in a Let is indented iff it is another Let or an If.
  *  - The "true" and "false" expressions in an if-then-else are both indented. *)
-let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : expr_t) : string =
+let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : string =
   let make_indent level = String.make (level * chars_per_indent) ' ' in
   match expr with
   | Unit -> "()"
@@ -153,18 +149,12 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : expr_t) :
       sprintf "apply(%s %s)" (SPVar.to_string f) (String.concat " " (List.map SPVar.to_string args))
   | ApplyUnknown (f, args) ->
       sprintf "apply_unk(%s %s)" (SPVar.to_string f) (String.concat " " (List.map SPVar.to_string args))
-  | RefArrayAlloc (a, b) ->
-      sprintf "ref_array_alloc(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
-  | ValArrayAlloc (a, b) ->
-      sprintf "val_array_alloc(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
-  | RefArraySet (a, b, c) ->
-      sprintf "ref_array_set(%s, %s, %s)" (SPVar.to_string a) (SPVar.to_string b) (SPVar.to_string c)
-  | ValArraySet (a, b, c) ->
-      sprintf "val_array_set(%s, %s, %s)" (SPVar.to_string a) (SPVar.to_string b) (SPVar.to_string c)
-  | RefArrayGet (a, b) ->
-      sprintf "ref_array_get(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
-  | ValArrayGet (a, b) ->
-      sprintf "val_array_get(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
+  | ArrayAlloc (a, b) ->
+      sprintf "array_alloc(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
+  | ArraySet (a, b, c) ->
+      sprintf "array_set(%s, %s, %s)" (SPVar.to_string a) (SPVar.to_string b) (SPVar.to_string c)
+  | ArrayGet (a, b) ->
+      sprintf "array_get(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
 
 
 
@@ -183,7 +173,7 @@ let string_of_function id (f : function_t) : string =
   | ExtFunc (ext_impl, _) ->
     sprintf "EXTERNAL %s ==> %s\n" f.f_name ext_impl
 
-let to_string (a : t) =
+let string_of_program (a : program_t) =
   let function_strings = SPVMap.fold
     (fun f_id f_def acc -> (string_of_function f_id f_def) :: acc)
     a.functions
@@ -287,8 +277,8 @@ let make_closure_def
   (closure_id : var_t)                (* Identifier to use for the closure array *)
   (free_vars : VSet.t)                (* Set of free variables to close over *)
   (scope_expr : Normal.t)             (* Expression in which the closure will be in scope *)
-  (extract_fun : Normal.t -> expr_t)  (* Method for extracting functions from a subexpression *)
-    : expr_t =
+  (extract_fun : Normal.t -> t)       (* Method for extracting functions from a subexpression *)
+    : t =
   (* Rewrite the scope_expr so it refers to the closure_id instead of f_id *)
   let typed_closure_id = {VarID.id = closure_id.SPVar.id; VarID.tp = f_id.VarID.tp} in
   let scope_expr = replace_fun_id f_id typed_closure_id scope_expr in
@@ -298,24 +288,25 @@ let make_closure_def
       let array_set_expr =
         match free_var.VarID.tp with
         | Type.Unit | Type.Bool _ | Type.Int _ ->
-            (* Value types are boxed so they can be stored in a reference array. *)
-            let size_id     = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-            let box_id      = {SPVar.id = Normal.free_var (); SPVar.storage = Ref} in
-            let ofs_id      = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+            (* The closure array stores reference types; value types must be boxed
+             * so they can be stored in the reference array. *)
+            let size_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+            let box_id  = {SPVar.id = Normal.free_var (); SPVar.storage = Ref} in
+            let ofs_id  = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
             Let (size_id, Int 1,
-              Let (box_id, ValArrayAlloc (size_id, value_var free_var),
+              Let (box_id, ArrayAlloc (size_id, value_var free_var),
                 Let (ofs_id, Int ofs,
                   Let ({SPVar.id = Normal.free_var (); SPVar.storage = Value},
-                    RefArraySet (closure_id, ofs_id, box_id),
+                    ArraySet (closure_id, ofs_id, box_id),
                     exp))))
         | Type.Arrow _ ->
             (* Reference types are stored directly in the closure array.  (Note that a
              * function which appears in this context (as a free variable) is an unknown
              * function and is therefore of reference type. *)
-            let ofs_id      = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+            let ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
             Let (ofs_id, Int ofs,
               Let ({SPVar.id = Normal.free_var (); SPVar.storage = Value},
-                RefArraySet (closure_id, ofs_id, ref_var free_var),
+                ArraySet (closure_id, ofs_id, ref_var free_var),
                 exp))
         | Type.Var _ ->
             (* Polymorphic free variable? *)
@@ -332,9 +323,9 @@ let make_closure_def
   let closure_func_ref = {SPVar.id = Normal.free_var (); SPVar.storage = Ref} in
   let closure_size_id  = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
   Let (box_size_id, Int 1,
-    Let (closure_func_ref, ValArrayAlloc (box_size_id, value_var f_id),
+    Let (closure_func_ref, ArrayAlloc (box_size_id, value_var f_id),
       Let (closure_size_id, Int (1 + (VSet.cardinal free_vars)),
-        Let (closure_id, RefArrayAlloc (closure_size_id, closure_func_ref),
+        Let (closure_id, ArrayAlloc (closure_size_id, closure_func_ref),
           expr_with_array_init))))
 
 
@@ -342,9 +333,9 @@ let make_closure_def
 let make_closure_fun_body
   (closure_id : var_t)                  (* Identifier for the closure array *)
   (free_vars : VSet.t)                  (* Variables stored in the closure array *)
-  (extract_fun : Normal.t -> expr_t)    (* Method for extracting functions from a subexpression *)
+  (extract_fun : Normal.t -> t)         (* Method for extracting functions from a subexpression *)
   (body : Normal.t)                     (* Function body to be altered *)
-    : expr_t =
+    : t =
   (* Using the naive approach here: systematically unpacking every free variable from the
    * closure array.  This will create a bunch of unnecessary register pressure; a better
    * implementation would unpack free variables closer to time-of-use. *)
@@ -359,17 +350,17 @@ let make_closure_fun_body
               let box_id         = {SPVar.id = Normal.free_var (); SPVar.storage = Ref} in
               let box_ofs_id     = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
               Let (closure_ofs_id, Int ofs,
-                Let (box_id, RefArrayGet (closure_id, closure_ofs_id),
+                Let (box_id, ArrayGet (closure_id, closure_ofs_id),
                   Let (box_ofs_id, Int 0,
-                    Let (value_var free_var, ValArrayGet (box_id, box_ofs_id),
+                    Let (value_var free_var, ArrayGet (box_id, box_ofs_id),
                       exp))))
           | Type.Arrow _ ->
               (* Reference types are stored directly in the closure array.  (Note that a
                * function which appears in this context (as a free variable) is an unknown
                * function and is therefore of reference type. *)
-              let ofs_id      = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+              let ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
               Let (ofs_id, Int ofs,
-                Let (ref_var free_var, RefArrayGet (closure_id, ofs_id),
+                Let (ref_var free_var, ArrayGet (closure_id, ofs_id),
                   exp))
           | Type.Var _ ->
               (* Polymorphic free variable? *)
@@ -389,9 +380,9 @@ let make_closure_application closure_id args =
   let box_ofs_id     = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
   let func_id        = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
   Let (closure_ofs_id, Int 0,
-    Let (box_id, RefArrayGet (closure_id, closure_ofs_id),
+    Let (box_id, ArrayGet (closure_id, closure_ofs_id),
       Let (box_ofs_id, Int 0,
-        Let (func_id, ValArrayGet (box_id, box_ofs_id),
+        Let (func_id, ArrayGet (box_id, box_ofs_id),
           ApplyUnknown (func_id, closure_id :: args)))))
 
 
@@ -426,7 +417,7 @@ type call_t = Known | Closure of var_t
 let rec extract_functions_aux
   (callable_ids : call_t VMap.t)  (* Function ids which could be referenced in this expr *)
   (normal_expr : Normal.t)        (* Expression to process *)
-    : expr_t =                    (* Resulting expression, with functions extracted *)
+    : t =                         (* Resulting expression, with functions extracted *)
   match normal_expr with
   | Normal.Unit                -> Unit
   | Normal.Int x               -> Int x
@@ -484,7 +475,7 @@ let rec extract_functions_aux
 
 
 (* Rewrite a normalized expression tree as a list of function definitions and an entry point. *)
-let extract_functions (expr : Normal.t) : t =
+let extract_functions (expr : Normal.t) : program_t =
   let () = reset_function_defs () in
   let toplevel_expr = extract_functions_aux VMap.empty expr in
   (* Construct the program entry point, [zml_main : unit -> unit] *)

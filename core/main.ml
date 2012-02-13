@@ -12,10 +12,10 @@ let parse filename =
     let typed_ast = Typing.infer ast in
     let normal = Normal.normalize typed_ast in
     (* let s = Normal.string_of_normal normal in *)
-    let func_normal = Function.extract_functions normal in
-    let s = Function.to_string func_normal in
+    let program = Function.extract_functions normal in
+    let s = Function.string_of_program program in
     let () = print_endline s in
-    let zapf_asm = Zapf.string_of_program func_normal in
+    let zapf_asm = Zapf.string_of_program program in
     print_endline zapf_asm
 
     (* let s = Function.to_string func_normal in *)

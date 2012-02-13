@@ -144,7 +144,7 @@ let local_variable_count = 14   (* excluding 'sp' *)
 
 
 (* Construct an assembly function identifier from a function ID. *)
-let asm_fun_name_of_id (program : Function.t) (f_id : SPVar.t) =
+let asm_fun_name_of_id (program : Function.program_t) (f_id : SPVar.t) =
   let f_def = SPVMap.find f_id program.Function.functions in
   let short_name = f_def.Function.f_name in
   if f_id = program.Function.entry_point then
@@ -166,7 +166,7 @@ type compile_state_t = {
 let rec compile_virtual_aux
   (state : compile_state_t)   (* Compilation context *)
   (result_reg)                (* Register which should be used to store the result *)
-  (expr : Function.expr_t)    (* Expression to be compiled *)
+  (expr : Function.t)         (* Expression to be compiled *)
     : compile_state_t         (* New context *)
     * VReg.t t list =         (* List of instructions for the expression *)
   match expr with
@@ -219,22 +219,13 @@ let rec compile_virtual_aux
       let g_reg    = SPVMap.find g state.reg_of_var in
       let arg_regs = List.map (fun v -> Reg (SPVMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Reg g_reg, arg_regs, result_reg)])
-  | Function.RefArrayAlloc (size, init) ->
+  | Function.ArrayAlloc (size, init) ->
       (* TODO *)
       assert false
-  | Function.ValArrayAlloc (size, init) ->
+  | Function.ArraySet (arr, index, v) ->
       (* TODO *)
       assert false
-  | Function.RefArraySet (arr, index, v) ->
-      (* TODO *)
-      assert false
-  | Function.ValArraySet (arr, index, v) ->
-      (* TODO *)
-      assert false
-  | Function.RefArrayGet (arr, index) ->
-      (* TODO *)
-      assert false
-  | Function.ValArrayGet (arr, index) ->
+  | Function.ArrayGet (arr, index) ->
       (* TODO *)
       assert false
 
@@ -280,7 +271,7 @@ and compile_virtual_if state result_reg is_cmp_equality a b e1 e2 =
  * with an infinite number of registers (aka "local variables") available. *)
 let compile_virtual
   (f_args : SPVar.t list)       (* Function arguments *)
-  (f_body : Function.expr_t)    (* Function body *)
+  (f_body : Function.t)         (* Function body *)
     : (VReg.t list)             (* Virtual registers assigned to function arguments *)
     * (VReg.t t list)           (* Generated virtual assembly *)
     * VRegState.t =             (* State of virtual register allocation *)
@@ -956,7 +947,7 @@ let rec alloc_registers
 
 
 (* Compile a function, yielding an assembly listing for the function body. *)
-let compile (f_args : SPVar.t list) (f_body : Function.expr_t) : ZReg.t t list =
+let compile (f_args : SPVar.t list) (f_body : Function.t) : ZReg.t t list =
   let virtual_args, virtual_asm, vreg_alloc_state = compile_virtual f_args f_body in
   alloc_registers virtual_args virtual_asm vreg_alloc_state
 
