@@ -1,3 +1,11 @@
+(* Liveness analysis.
+ *
+ * This module provides a functorized iterative liveness solver which should be suitable
+ * for determining variable lifetimes across a wide variety of problems.  In particular,
+ * this is used during register allocation and also for automatically managing the lifetimes of
+ * reference types.
+ *)
+
 
 module type CFG = sig
 (** Description of a control-flow graph (i.e. storage for nodes of the graph, along with

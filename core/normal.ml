@@ -57,7 +57,7 @@ type t =
   | UnaryOp of unary_op_t * var_t                         (* Unary integer operation *)
   | Conditional of conditional_t * var_t * var_t * t * t  (* Conditional form *)
   | Var of var_t                                          (* Bound variable reference *)
-  | Let of var_t * t * t                                  (* Let binding for a value type *)
+  | Let of var_t * t * t                                  (* Let binding for a variable *)
   | LetFun of string * var_t * (var_t list) * t * t       (* Let binding for a function definition *)
   | External of string * var_t * string * int * t         (* External function definition *)
   | Apply of var_t * (var_t list)                         (* Function application *)

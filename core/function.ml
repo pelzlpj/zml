@@ -50,7 +50,7 @@ type t =
   | Conditional of conditional_t * var_t * var_t * t * t
                                               (* Conditional form *)
   | Var of var_t                              (* Bound variable reference *)
-  | Let of var_t * t * t                      (* Let binding for a value type *)
+  | Let of var_t * t * t                      (* Let binding for a variable *)
   | ApplyKnown of var_t * (var_t list)        (* Application of "known" function *)
   | ApplyUnknown of var_t * (var_t list)      (* Application of an "unknown" function (computed address) *)
   | ArrayAlloc of var_t * var_t               (* Construct a new array (size, init) *)
