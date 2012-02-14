@@ -12,6 +12,16 @@
  * This module examines the code emitted by [Function.extract_functions], and inserts
  * the code necessary to release references.  Liveness analysis is performed in
  * order to release references as early as possible.
+ *
+ * General rules for reference management:
+ *    - A new reference is created when allocating a reference type (list, array, etc.).
+ *    - A new reference is created when retrieving a value from a data structure which stores
+ *        reference types.
+ *    - A new reference is created (as a clone) when a Let expression binds to a variable
+ *        which was already bound to a reference type.
+ *    - All references created within the scope of a function are released as soon as
+ *        liveness analysis indicates that they are no longer used.  If a reference is
+ *        the return value for a function, it is not released within function scope.
  *)
 
 
@@ -58,7 +68,7 @@ type t =
   | UnaryOp of unary_op_t * ValID.t             (* Unary integer operation *)
   | Conditional of cond_t * ValID.t * ValID.t
       * t * t                                   (* Conditional form *)
-  | Var of ValID.t                              (* Bound variable reference *)
+  | Var of sp_var_t                             (* Bound variable reference *)
   | Let of sp_var_t * t * t                     (* Let binding for a variable *)
   | ApplyKnown of ValID.t * (sp_var_t list)     (* Application of "known" function *)
   | ApplyUnknown of RefID.t * (sp_var_t list)   (* Application of an "unknown" function (computed address) *)
@@ -95,22 +105,31 @@ let infer_sp_var v =
   | Function.Ref   -> Ref   (RefID.of_var v)
 
 
-(* Find locations where a reference type is cloned, and annotate them with a cloning operation. *)
-let rec identify_ref_clones (expr : Function.t) : t =
+(* Find locations where a reference type is cloned, and annotate them with a cloning operation.
+ * We consider a reference type to be cloned whenever a Let expression is binding to a
+ * reference-type Var.  *)
+let rec identify_ref_clones ?(is_binding_expr=false) (expr : Function.t) : t =
   match expr with
   | Function.Unit                -> Unit
   | Function.Int x               -> Int x
   | Function.BinaryOp (op, a, b) -> BinaryOp (op, ValID.of_var a, ValID.of_var b)
   | Function.UnaryOp (op, a)     -> UnaryOp (op, ValID.of_var a)
   | Function.Conditional (cond, a, b, e1, e2) ->
-      Conditional (cond, ValID.of_var a, ValID.of_var b, identify_ref_clones e1, identify_ref_clones e2)
+      Conditional (cond, ValID.of_var a, ValID.of_var b,
+        identify_ref_clones ~is_binding_expr e1,
+        identify_ref_clones ~is_binding_expr e2)
   | Function.Var a ->
-      begin match a.SPVar.storage with 
-      | Function.Value -> Var (ValID.of_var a)
-      | Function.Ref   -> RefClone (RefID.of_var a)
-      end
+      if is_binding_expr then
+        begin match a.SPVar.storage with 
+        | Function.Value -> Var (infer_sp_var a)
+        | Function.Ref   -> RefClone (RefID.of_var a)
+        end
+      else
+        Var (infer_sp_var a)
   | Function.Let (a, e1, e2) ->
-      Let (infer_sp_var a, identify_ref_clones e1, identify_ref_clones e2)
+      Let (infer_sp_var a,
+        identify_ref_clones ~is_binding_expr:true e1,
+        identify_ref_clones ~is_binding_expr e2)
   | Function.ApplyKnown (f, f_args)   -> ApplyKnown (ValID.of_var f, List.map infer_sp_var f_args)
   | Function.ApplyUnknown (f, f_args) -> ApplyUnknown (RefID.of_var f, List.map infer_sp_var f_args)
   | Function.ArrayAlloc (size, init)  -> ArrayAlloc (ValID.of_var size, infer_sp_var init)
@@ -143,18 +162,17 @@ let identify_ref_clones_program (program : Function.program_t) : program_t =
   }
 
 
-module Int = struct
-  type t = int
-  let compare e1 e2 = if e1 < e2 then -1 else if e1 > e2 then 1 else 0
+module TOrd = struct
+  type top_t = t
+  type t = top_t
+  let compare = Pervasives.compare
 end
-module IMap = Map.Make(Int)
+module TMap = Map.Make(TOrd)
 
 
 type cfn_t = {
-  (* Current expression *)
-  expr : t;
-  (* Identifier attached to the successor node, if any *)
-  successor : int option;
+  (* Successor node, if any *)
+  successor : t option;
   (* Inputs for this node (reference types only) *)
   inputs : RSet.t;
   (* Outputs for this node (reference types only) *)
@@ -163,11 +181,11 @@ type cfn_t = {
 
 type cfg_state_t = {
   (* Current expression map *)
-  map : cfn_t IMap.t;
+  map : cfn_t TMap.t;
   (* Reference-type variable being bound to the current expression, if any *)
   binding : RefID.t option;
-  (* Identifier for the expression in which [binding] will be in scope, if any *)
-  scope_expr : int option
+  (* Expression in which [binding] will be in scope, if any *)
+  scope_expr : t option
 }
 
 
@@ -180,22 +198,21 @@ let cfn_of_vars state expr vars =
     RSet.empty
     vars
   in
-  IMap.add (IMap.cardinal state.map) {
-    expr;
+  TMap.add expr {
     successor = state.scope_expr;
     inputs;
     outputs = match state.binding with Some x -> RSet.singleton x | None -> RSet.empty
   } state.map
 
 
+(* Construct the control flow graph to be used for reference-type liveness analysis. *)
 let rec make_control_flow_graph
   (state : cfg_state_t)
   (expr : t)
-    : cfn_t IMap.t =
+    : cfn_t TMap.t =
   match expr with
-  | Unit | Int _ | BinaryOp _ | UnaryOp _ | Var _ ->
-      IMap.add (IMap.cardinal state.map) {
-          expr;
+  | Unit | Int _ | BinaryOp _ | UnaryOp _ ->
+      TMap.add expr {
           successor = state.scope_expr;
           inputs    = RSet.empty;
           outputs   = match state.binding with Some x -> RSet.singleton x | None -> RSet.empty
@@ -203,8 +220,7 @@ let rec make_control_flow_graph
   | Conditional (cond, a, b, e1, e2) ->
       let e1_map    = make_control_flow_graph state e1 in
       let e1_e2_map = make_control_flow_graph {state with map = e1_map} e2 in
-      IMap.add (IMap.cardinal e1_e2_map) {
-          expr;
+      TMap.add expr {
           successor = state.scope_expr;
           inputs    = RSet.empty;
           outputs   = match state.binding with Some x -> RSet.singleton x | None -> RSet.empty
@@ -217,56 +233,139 @@ let rec make_control_flow_graph
         | Value v -> None
         | Ref   v -> Some v
       in
-      let e2_id  = IMap.cardinal state.map in
       let e2_map = make_control_flow_graph state e2 in
       make_control_flow_graph {
           map = e2_map;
           binding;
-          scope_expr = Some e2_id
+          scope_expr = Some e2
         } e1
   | ApplyKnown (_, args) ->
       cfn_of_vars state expr args
   | ApplyUnknown (f, args) ->
       cfn_of_vars state expr ((Ref f) :: args)
-  | ArrayAlloc (_, init) ->
-      cfn_of_vars state expr [init]
+  | ArrayAlloc (_, x) | Var x ->
+      cfn_of_vars state expr [x]
   | ArraySet (arr, _, x) ->
       cfn_of_vars state expr ((Ref arr) :: [x])
   | ArrayGet (r, _) | RefClone r | RefRelease r ->
       cfn_of_vars state expr [Ref r]
 
 
-(* Compute the identifiers for CFG nodes which may immediately follow node [i]. *)
-let cfn_successors graph i =
-  match (IMap.find i graph).successor with
+(* Compute the identifiers for CFG nodes which may immediately follow node [expr]. *)
+let cfn_successors graph expr =
+  match (TMap.find expr graph).successor with
   | None   -> []
-  | Some i -> [i]
+  | Some e -> [e]
 
 
-(* Compute the set of variables used as inputs for CFG node [i].  (In this context, we only care
+(* Compute the set of variables used as inputs for CFG node [expr].  (In this context, we only care
  * about reference types, so value types do not appear in the result. *)
-let cfn_inputs graph i =
-  (IMap.find i graph).inputs
+let cfn_inputs graph expr =
+  (TMap.find expr graph).inputs
 
 
-(* Compute the set of variables used as outputs for CFG node [i].  (In this context, we only
+(* Compute the set of variables used as outputs for CFG node [expr].  (In this context, we only
  * care about reference types, so value types do not appear in the result.) *)
-let cfn_outputs graph i =
-  (IMap.find i graph).outputs
+let cfn_outputs graph expr =
+  (TMap.find expr graph).outputs
 
 
 module Cfg = struct
-  type t = cfn_t IMap.t
+  type t = cfn_t TMap.t
 
-  module Id   = Int
+  module Id   = TOrd
   module VSet = RSet
 
-  let fold f graph a = IMap.fold (fun id node acc -> f id acc) graph a
+  let fold f graph a = TMap.fold (fun id node acc -> f id acc) graph a
   let successors = cfn_successors
   let inputs     = cfn_inputs
   let outputs    = cfn_outputs
 end
 
 module LSolver = Liveness.Make(Cfg)
+
+
+let rec insert_ref_release_aux
+  ?(local_refs=RSet.empty)
+  ?(curr_binding=None)
+  (liveness : LSolver.t LSolver.IdMap.t)
+  (expr : t)
+    =
+  (* FIXME: correct, but hacky *)
+  let free_value_var () = infer_sp_var {SPVar.id = Normal.free_var(); SPVar.storage = Function.Value} in
+  let free_ref_var ()   = infer_sp_var {SPVar.id = Normal.free_var(); SPVar.storage = Function.Ref} in
+  match expr with
+  | Conditional (cond, a, b, e1, e2) ->
+      Conditional (cond, a, b,
+        insert_ref_release_aux ~local_refs ~curr_binding liveness e1,
+        insert_ref_release_aux ~local_refs ~curr_binding liveness e2)
+  | Let (a, e1, e2) ->
+      let e2_local_refs =
+        match a with
+        | Value v -> local_refs
+        | Ref   r -> RSet.add r local_refs
+      in
+      Let (a,
+        insert_ref_release_aux ~local_refs ~curr_binding:(Some a) liveness e1,
+        insert_ref_release_aux ~local_refs:e2_local_refs ~curr_binding liveness e2)
+  | Unit | Int _ | BinaryOp _ | UnaryOp _ | Var _
+  | ApplyKnown _ | ApplyUnknown _ | ArrayAlloc _
+  | ArraySet _ | ArrayGet _ | RefClone _ | RefRelease _ ->
+      begin match curr_binding with
+      | Some binding ->
+        let new_bind_var =
+          match binding with
+          | Value _ -> free_value_var ()
+          | Ref _   -> free_ref_var ()
+        in
+        let expr_live = LSolver.IdMap.find expr liveness in
+        let dead_local_refs = RSet.union local_refs
+          (RSet.diff expr_live.LSolver.live_in expr_live.LSolver.live_out)
+        in
+        Let (new_bind_var, expr,
+          RSet.fold
+            (fun dead_ref acc ->
+              Let (free_value_var (), RefRelease dead_ref, acc))
+            dead_local_refs
+            (Var binding))
+      | None ->
+          (* Not an intermediate expression *)
+          expr
+      end
+
+
+(* Insert RefRelease operations for expression [expr], using the [liveness] map.
+ * References are released under the following conditions:
+ *    1) the reference is created within the body of [expr]
+ *    2) the reference is an intermediate value, not the final value of the [expr] *)
+let insert_ref_release (expr : t) : t =
+  let cfg_init_state = {
+    map        = TMap.empty;
+    binding    = None;
+    scope_expr = None
+  } in
+  let cfg = make_control_flow_graph cfg_init_state expr in
+  let liveness = LSolver.solve cfg in
+  insert_ref_release_aux liveness expr
+
+
+(* Rewrite the [program] inserting code for automatic management of reference lifetimes. *)
+let insert_ref_management (program : Function.program_t) : program_t =
+  let clone_annot_prog = identify_ref_clones_program program in
+  let release_annot_func = SPVMap.fold
+    (fun f_id f acc ->
+      let impl =
+        match f.f_impl with
+        | NativeFunc (args, expr) ->
+            NativeFunc (args, insert_ref_release expr)
+        | ExtFunc _ ->
+            f.f_impl
+      in
+      SPVMap.add f_id {f with f_impl = impl} acc)
+    clone_annot_prog.functions
+    SPVMap.empty
+  in { clone_annot_prog with
+    functions = release_annot_func;
+  }
 
 
