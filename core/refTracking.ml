@@ -319,7 +319,7 @@ let rec insert_ref_release_aux
           | Ref _   -> free_ref_var ()
         in
         let expr_live = LSolver.IdMap.find expr liveness in
-        let dead_local_refs = RSet.union local_refs
+        let dead_local_refs = RSet.inter local_refs
           (RSet.diff expr_live.LSolver.live_in expr_live.LSolver.live_out)
         in
         Let (new_bind_var, expr,
