@@ -24,6 +24,7 @@
  *        the return value for a function, it is not released within function scope.
  *)
 
+open Printf
 
 module SPVar  = Function.SPVar
 module SPVMap = Function.SPVMap
@@ -37,6 +38,7 @@ module type OPAQUE_ID = sig
   type t
   val compare : t -> t -> int
   val of_var : SPVar.t -> t
+  val to_string : t -> string
 end
 
 (* Opaque identifier for value-type variables *)
@@ -44,6 +46,7 @@ module ValID : OPAQUE_ID = struct
   type t = int
   let compare a b = if a < b then -1 else if a > b then 1 else 0
   let of_var x = match x.SPVar.storage with Function.Value -> x.SPVar.id | Function.Ref -> assert false
+  let to_string x = sprintf "vv%d" x
 end
 
 (* Opaque identifier for reference-type variables *)
@@ -51,6 +54,7 @@ module RefID : OPAQUE_ID = struct
   type t = int
   let compare a b = if a < b then -1 else if a > b then 1 else 0
   let of_var x = match x.SPVar.storage with Function.Ref -> x.SPVar.id | Function.Value -> assert false
+  let to_string x = sprintf "rv%d" x
 end
 
 module RSet = Set.Make(RefID)
@@ -59,6 +63,8 @@ module RSet = Set.Make(RefID)
 type sp_var_t =
   | Value of ValID.t
   | Ref   of RefID.t
+
+let string_of_sp_var x = match x with Value v -> ValID.to_string v | Ref r -> RefID.to_string r
 
 
 type t =
@@ -71,7 +77,7 @@ type t =
   | Var of sp_var_t                             (* Bound variable reference *)
   | Let of sp_var_t * t * t                     (* Let binding for a variable *)
   | ApplyKnown of ValID.t * (sp_var_t list)     (* Application of "known" function *)
-  | ApplyUnknown of RefID.t * (sp_var_t list)   (* Application of an "unknown" function (computed address) *)
+  | ApplyUnknown of ValID.t * (sp_var_t list)   (* Application of an "unknown" function (computed address) *)
   | ArrayAlloc of ValID.t * sp_var_t            (* Construct a new array (size, init) *)
   | ArraySet of RefID.t * ValID.t * sp_var_t    (* Store a ref or value in an array (arr, index, ref) *)
   | ArrayGet of RefID.t * ValID.t               (* Get a ref or value from an array (arr, index) *)
@@ -98,6 +104,96 @@ type program_t = {
   (* Function to be invoked as program entry point (with type "unit -> unit") *)
   entry_point : SPVar.t
 }
+
+
+(* Formatting rules:
+ *  - A newline always follows "in", "then", and "else", as well as the true/false
+ *    clauses of if/then.
+ *  - The bound expression in a Let is indented iff it is another Let or an If.
+ *  - The "true" and "false" expressions in an if-then-else are both indented. *)
+let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : string =
+  let make_indent level = String.make (level * chars_per_indent) ' ' in
+  match expr with
+  | Unit -> "()"
+  | Int i -> string_of_int i
+  | BinaryOp (op, a, b) ->
+      let op_s =
+        match op with
+        | Normal.Add -> "+"
+        | Normal.Sub -> "-"
+        | Normal.Mul -> "*"
+        | Normal.Div -> "/"
+        | Normal.Mod -> "%"
+      in
+      sprintf "(%s %s %s)"  (ValID.to_string a) op_s (ValID.to_string b)
+  | UnaryOp (Normal.Neg, a) -> sprintf "(- %s)" (ValID.to_string a)
+  | Conditional (cond, a, b, c, d) ->
+      sprintf "%sif %s %s %s then\n%s%s\n%selse\n%s%s"
+        (make_indent indent_level)
+        (ValID.to_string a)
+        (match cond with Normal.IfEq -> "=" | Normal.IfLess -> "<")
+        (ValID.to_string b)
+        (match c with Let _ | Conditional _ -> "" | _ -> (make_indent (indent_level + 1)))
+        (string_of_expr ~indent_level:(indent_level + 1) c)
+        (make_indent indent_level)
+        (match d with Let _ | Conditional _ -> "" | _ -> (make_indent (indent_level + 1)))
+        (string_of_expr ~indent_level:(indent_level + 1) d)
+  | Var a ->
+      string_of_sp_var a
+  | Let (a, b, c) ->
+      begin match b with
+      | Let _ | Conditional _ ->
+          sprintf "%slet %s =\n%s\n%sin\n%s%s"
+            (make_indent indent_level)
+            (string_of_sp_var a)
+            (string_of_expr ~indent_level:(indent_level + 1) b)
+            (make_indent indent_level)
+            (match c with | Let _ | Conditional _ -> "" | _ -> (make_indent indent_level))
+            (string_of_expr ~indent_level c)
+      | _ ->
+          sprintf "%slet %s = %s in\n%s%s"
+            (make_indent indent_level)
+            (string_of_sp_var a)
+            (string_of_expr ~indent_level b)
+            (match c with | Let _ | Conditional _ -> "" | _ -> (make_indent indent_level))
+            (string_of_expr ~indent_level c)
+      end
+  | ApplyKnown (f, args) ->
+      sprintf "apply(%s %s)" (ValID.to_string f) (String.concat " " (List.map string_of_sp_var args))
+  | ApplyUnknown (f, args) ->
+      sprintf "apply_unk(%s %s)" (ValID.to_string f) (String.concat " " (List.map string_of_sp_var args))
+  | ArrayAlloc (a, b) ->
+      sprintf "array_alloc(%s, %s)" (ValID.to_string a) (string_of_sp_var b)
+  | ArraySet (a, b, c) ->
+      sprintf "array_set(%s, %s, %s)" (RefID.to_string a) (ValID.to_string b) (string_of_sp_var c)
+  | ArrayGet (a, b) ->
+      sprintf "array_get(%s, %s)" (RefID.to_string a) (ValID.to_string b)
+  | RefClone r ->
+      sprintf "clone(%s)" (RefID.to_string r)
+  | RefRelease r ->
+      sprintf "release(%s)" (RefID.to_string r)
+
+
+let string_of_function id (f : function_t) : string =
+  match f.f_impl with
+  | NativeFunc (f_args, f_body) ->
+    (sprintf "(* %s *)\nlet %s %s =\n"
+      f.f_name
+      (SPVar.to_string id)
+      (String.concat " " (List.map string_of_sp_var f_args))) ^
+    (string_of_expr ~indent_level:1 f_body)
+  | ExtFunc (ext_impl, _) ->
+    sprintf "EXTERNAL %s ==> %s\n" f.f_name ext_impl
+
+
+let string_of_program (a : program_t) =
+  let function_strings = SPVMap.fold
+    (fun f_id f_def acc -> (string_of_function f_id f_def) :: acc)
+    a.functions
+    []
+  in
+  String.concat "\n\n" function_strings
+
 
 let infer_sp_var v =
   match v.SPVar.storage with
@@ -131,7 +227,7 @@ let rec identify_ref_clones ?(is_binding_expr=false) (expr : Function.t) : t =
         identify_ref_clones ~is_binding_expr:true e1,
         identify_ref_clones ~is_binding_expr e2)
   | Function.ApplyKnown (f, f_args)   -> ApplyKnown (ValID.of_var f, List.map infer_sp_var f_args)
-  | Function.ApplyUnknown (f, f_args) -> ApplyUnknown (RefID.of_var f, List.map infer_sp_var f_args)
+  | Function.ApplyUnknown (f, f_args) -> ApplyUnknown (ValID.of_var f, List.map infer_sp_var f_args)
   | Function.ArrayAlloc (size, init)  -> ArrayAlloc (ValID.of_var size, infer_sp_var init)
   | Function.ArraySet (arr, index, v) -> ArraySet (RefID.of_var arr, ValID.of_var index, infer_sp_var v)
   | Function.ArrayGet (arr, index)    -> ArrayGet (RefID.of_var arr, ValID.of_var index)
@@ -163,6 +259,7 @@ let identify_ref_clones_program (program : Function.program_t) : program_t =
 
 
 module TOrd = struct
+  (* Namespace collision... *)
   type top_t = t
   type t = top_t
   let compare = Pervasives.compare
@@ -226,23 +323,23 @@ let rec make_control_flow_graph
           outputs   = match state.binding with Some x -> RSet.singleton x | None -> RSet.empty
         } e1_e2_map
   | Let (a, e1, e2) ->
-      (* Note: the let-expression itself receives no node in the CFG.  Instead, the
-       * bound variable becomes the output of expression [e1]. *)
+      (* The bound variable becomes the output of expression [e1]. *)
       let binding =
         match a with
         | Value v -> None
         | Ref   v -> Some v
       in
-      let e2_map = make_control_flow_graph state e2 in
-      make_control_flow_graph {
-          map = e2_map;
-          binding;
-          scope_expr = Some e2
-        } e1
-  | ApplyKnown (_, args) ->
+      let e2_map    = make_control_flow_graph state e2 in
+      let e1_e2_map = make_control_flow_graph {map = e2_map; binding; scope_expr = Some e2} e1 in
+      (* The current node has only a trivial entry in the CFG; it's just there to allow the output
+       * of [e1] to flow through to [e2]. *)
+      TMap.add expr {
+        successor = Some e2;
+        inputs    = RSet.empty;
+        outputs   = RSet.empty;
+      } e1_e2_map
+  | ApplyKnown (_, args) | ApplyUnknown (_, args) ->
       cfn_of_vars state expr args
-  | ApplyUnknown (f, args) ->
-      cfn_of_vars state expr ((Ref f) :: args)
   | ArrayAlloc (_, x) | Var x ->
       cfn_of_vars state expr [x]
   | ArraySet (arr, _, x) ->
@@ -286,11 +383,11 @@ module LSolver = Liveness.Make(Cfg)
 
 
 let rec insert_ref_release_aux
-  ?(local_refs=RSet.empty)
-  ?(curr_binding=None)
-  (liveness : LSolver.t LSolver.IdMap.t)
-  (expr : t)
-    =
+  ?(local_refs=RSet.empty)                (* Set of references which are live in this expr *)
+  ?(curr_binding=None)                    (* Variable which is bound to the current expression, if any *)
+  (liveness : LSolver.t LSolver.IdMap.t)  (* Reference variable liveness information *)
+  (expr : t)                              (* Expression to be analyzed *)
+    : t =
   (* FIXME: correct, but hacky *)
   let free_value_var () = infer_sp_var {SPVar.id = Normal.free_var(); SPVar.storage = Function.Value} in
   let free_ref_var ()   = infer_sp_var {SPVar.id = Normal.free_var(); SPVar.storage = Function.Ref} in
@@ -322,12 +419,15 @@ let rec insert_ref_release_aux
         let dead_local_refs = RSet.inter local_refs
           (RSet.diff expr_live.LSolver.live_in expr_live.LSolver.live_out)
         in
-        Let (new_bind_var, expr,
-          RSet.fold
-            (fun dead_ref acc ->
-              Let (free_value_var (), RefRelease dead_ref, acc))
-            dead_local_refs
-            (Var binding))
+        if RSet.is_empty dead_local_refs then
+          expr
+        else
+          Let (new_bind_var, expr,
+            RSet.fold
+              (fun dead_ref acc ->
+                Let (free_value_var (), RefRelease dead_ref, acc))
+              dead_local_refs
+              (Var new_bind_var))
       | None ->
           (* Not an intermediate expression *)
           expr

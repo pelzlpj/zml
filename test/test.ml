@@ -19,6 +19,6 @@ let y = zml_print_dec in
 let z = y x in
 let z = zml_print_newline () in
 let f x y = x + y in
-let g = f x in
+(*let g = f x in*)
 ()
 
