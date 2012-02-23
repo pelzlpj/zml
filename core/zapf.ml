@@ -10,7 +10,7 @@ open Printf
 open Zasm
 
 
-let string_of_operand_prog (program : Function.program_t) op =
+let string_of_operand_prog (program : RefTracking.program_t) op =
   match op with
   | Const (MappedRoutine f_id) -> asm_fun_name_of_id program f_id
   | Const (AsmRoutine s)       -> s
@@ -21,7 +21,7 @@ let string_of_operand_prog (program : Function.program_t) op =
 (* Serialize a list of assembly instructions to a string. *)
 let rec string_of_asm
   ?(acc=[])                       (* accumulator for the result *)
-  (program : Function.program_t)  (* description of entire program (functions + entry point) *)
+  (program : RefTracking.program_t)  (* description of entire program (functions + entry point) *)
   (asm : ZReg.t Zasm.t list)      (* instructions to be serialized *)
     : string =
   let string_of_operand op = string_of_operand_prog program op in
@@ -67,12 +67,12 @@ let rec string_of_asm
 
 (* Compile a function and serialize it to Zapf-compatible assembly. *)
 let string_of_function
-  (program : Function.program_t)  (* description of entire program (functions + entry point) *)
-  (f_id : SPVar.t)                (* identifier for function to be compiled *)
+  (program : RefTracking.program_t)  (* description of entire program (functions + entry point) *)
+  (f_id : ValID.t)                   (* identifier for function to be compiled *)
     : string =
-  let f_def = SPVMap.find f_id program.Function.functions in
-  match f_def.Function.f_impl with
-  | Function.NativeFunc (f_args, f_body) ->
+  let f_def = VMap.find f_id program.RefTracking.functions in
+  match f_def.RefTracking.f_impl with
+  | RefTracking.NativeFunc (f_args, f_body) ->
       let asm = compile f_args f_body in
       let local_var_names = (List.map (sprintf "r%d") (list_range 15)) in
       let local_vars_str = String.concat ", " local_var_names in
@@ -82,21 +82,21 @@ let string_of_function
       in
       let funct_body = string_of_asm program asm in
       funct_header ^ funct_body
-  | Function.ExtFunc _ ->
+  | RefTracking.ExtFunc _ ->
       ""
 
 
 (* Compile all functions, and serialize them to Zapf-compatible assembly. *)
-let string_of_program (program : Function.program_t) : string =
+let string_of_program (program : RefTracking.program_t) : string =
   (* Skip over the external function declarations... *)
-  let f_strings = Function.SPVMap.fold
+  let f_strings = VMap.fold
     (fun f_id f_def acc ->
-      match f_def.Function.f_impl with
-      | Function.NativeFunc _ -> 
+      match f_def.RefTracking.f_impl with
+      | RefTracking.NativeFunc _ -> 
           (string_of_function program f_id) :: acc
-      | Function.ExtFunc _ ->
+      | RefTracking.ExtFunc _ ->
           acc)
-    program.Function.functions
+    program.RefTracking.functions
     []
   in
   String.concat "\n\n" f_strings

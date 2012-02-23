@@ -1,4 +1,4 @@
-(* Compilation of functions (i.e. [Function.function_t]) into Z-Machine assembly.
+(* Compilation of functions (i.e. [RefTracking.function_t]) into Z-Machine assembly.
  *
  * No assumptions are made within this module regarding the specific format in which the Z-Machine
  * instructions should be emitted for assembly.  See module [Zapf] for code which targets the Zapf
@@ -7,11 +7,30 @@
 
 open Printf
 
-module VarID  = Normal.VarID
-module VMap   = Normal.VMap
-module SPVar  = Function.SPVar
-module SPVMap = Function.SPVMap
-type var_t    = Normal.var_t
+module ValID  = RefTracking.ValID
+module RefID  = RefTracking.RefID
+module VMap   = RefTracking.VMap
+type sp_var_t = RefTracking.sp_var_t
+
+
+module RV = struct
+  type t = sp_var_t
+  let compare x y =
+    match (x, y) with
+    | (RefTracking.Value vx, RefTracking.Value vy) ->
+        ValID.compare vx vy
+    | (RefTracking.Ref rx, RefTracking.Ref ry) ->
+        RefID.compare rx ry
+    | (RefTracking.Value _, RefTracking.Ref _) ->
+        ~- 1
+    | (RefTracking.Ref _, RefTracking.Value _) ->
+        1
+end
+
+module RVMap = Map.Make(RV)
+
+let lift_value a = RefTracking.Value a
+let lift_ref   a = RefTracking.Ref a
 
 
 (********************************************************************************
@@ -19,7 +38,7 @@ type var_t    = Normal.var_t
  *
  * The compilation strategy proceeds in two phases:
  *
- *    1) Given a function to compile, of type [Function.function_t], generate
+ *    1) Given a function to compile, of type [RefTracking.function_t], generate
  *       "virtual" Z-Machine assembly which implements the function.  This is
  *       assembly which targets a Z-Machine with an infinite number of registers
  *       (aka "local variables") available.
@@ -103,7 +122,7 @@ type label_t = int
 (* Constant values passed into opcodes fall into these categories *)
 type const_t =
   | ConstNum of int           (* Plain old integer used as an operand *)
-  | MappedRoutine of SPVar.t  (* Typical form for calling a routine by internal ZML id *)
+  | MappedRoutine of ValID.t  (* Typical form for calling a routine by internal ZML id *)
   | AsmRoutine of string      (* Directly injecting the name of an assembly routine *)
 
 
@@ -118,7 +137,7 @@ type 'a operand_t =
 
 
 (* We need only a small subset of Z-machine opcodes in order to implement
- * [Function.expr_t].  In the future, it may prove useful to use additional
+ * [RefTracking.expr_t].  In the future, it may prove useful to use additional
  * opcodes to handle special cases.  It probably won't matter for performance,
  * but the code size could be reduced by using more compact instructions. *)
 type 'a t =
@@ -144,21 +163,21 @@ let local_variable_count = 14   (* excluding 'sp' *)
 
 
 (* Construct an assembly function identifier from a function ID. *)
-let asm_fun_name_of_id (program : Function.program_t) (f_id : SPVar.t) =
-  let f_def = SPVMap.find f_id program.Function.functions in
-  let short_name = f_def.Function.f_name in
-  if f_id = program.Function.entry_point then
+let asm_fun_name_of_id (program : RefTracking.program_t) (f_id : ValID.t) =
+  let f_def = VMap.find f_id program.RefTracking.functions in
+  let short_name = f_def.RefTracking.f_name in
+  if f_id = program.RefTracking.entry_point then
     short_name
   else
-    match f_def.Function.f_impl with
-    | Function.NativeFunc _ ->
-        sprintf "%s_%s" short_name (SPVar.to_int_string f_id)
-    | Function.ExtFunc (ext_impl, _) ->
+    match f_def.RefTracking.f_impl with
+    | RefTracking.NativeFunc _ ->
+        sprintf "%s_%s" short_name (ValID.to_string f_id)
+    | RefTracking.ExtFunc (ext_impl, _) ->
         ext_impl
 
 
 type compile_state_t = {
-  reg_of_var : VReg.t SPVMap.t; (* Maps Function.t variables to virtual Z-Machine registers *)
+  reg_of_var : VReg.t RVMap.t;   (* Maps RefTracking.t variables to virtual Z-Machine registers *)
   reg_state  : VRegState.t;     (* Tracks virtual registers used *)
   label_count: int              (* Number of labels emitted *)
 }
@@ -166,16 +185,16 @@ type compile_state_t = {
 let rec compile_virtual_aux
   (state : compile_state_t)   (* Compilation context *)
   (result_reg)                (* Register which should be used to store the result *)
-  (expr : Function.t)         (* Expression to be compiled *)
+  (expr : RefTracking.t)      (* Expression to be compiled *)
     : compile_state_t         (* New context *)
     * VReg.t t list =         (* List of instructions for the expression *)
   match expr with
-  | Function.Unit ->
+  | RefTracking.Unit ->
       (* For now we're treating unit as integer zero.  It shouldn't matter. *)
-      compile_virtual_aux state result_reg (Function.Int 0)
-  | Function.Int i ->
+      compile_virtual_aux state result_reg (RefTracking.Int 0)
+  | RefTracking.Int i ->
       (state, [STORE (result_reg, Const (ConstNum i))])
-  | Function.BinaryOp (op, a, b) ->
+  | RefTracking.BinaryOp (op, a, b) ->
       let ctor =
         match op with
         | Normal.Add -> (fun x y z -> ADD (x, y, z))
@@ -185,55 +204,81 @@ let rec compile_virtual_aux
         | Normal.Mod -> (fun x y z -> MOD (x, y, z))
       in
       compile_virtual_binary_int state result_reg ctor a b
-  | Function.UnaryOp (Normal.Neg, a) ->
+  | RefTracking.UnaryOp (Normal.Neg, a) ->
       (* Negation is implemented as subtraction from zero. *)
-      (state, [SUB (Const (ConstNum 0), Reg (SPVMap.find a state.reg_of_var), result_reg)])
-  | Function.Conditional (Normal.IfEq, a, b, e1, e2) ->
+      (state, [SUB (Const (ConstNum 0), Reg (RVMap.find (lift_value a) state.reg_of_var), result_reg)])
+  | RefTracking.Conditional (Normal.IfEq, a, b, e1, e2) ->
       compile_virtual_if state result_reg true a b e1 e2
-  | Function.Conditional (Normal.IfLess, a, b, e1, e2) ->
+  | RefTracking.Conditional (Normal.IfLess, a, b, e1, e2) ->
       compile_virtual_if state result_reg false a b e1 e2
-  | Function.Var a ->
+  | RefTracking.Var a ->
       begin try
-        (state, [LOAD (SPVMap.find a state.reg_of_var, result_reg)])
+        (state, [LOAD (RVMap.find a state.reg_of_var, result_reg)])
       with Not_found ->
         (* If there is no register associated with this variable, then
          * this must be a reference to a function name.
          *
          * FIXME: this sucks and feels brittle.  The type system should encode this info. *)
-        (state, [STORE (result_reg, Const (MappedRoutine a))])
+        begin match a with
+        | RefTracking.Value v ->
+            (state, [STORE (result_reg, Const (MappedRoutine v))])
+        | RefTracking.Ref _ ->
+            assert false
+        end
       end
-  | Function.Let (a, e1, e2) ->
+  | RefTracking.Let (a, e1, e2) ->
       (* "let" just leads to emitting instructions for [e1] prior to [e2],
        * with the additional constraint that [a] becomes an alias for the
        * [e1] result register while compiling [e2]. *)
       let (next_state, head_result_reg) = VRegState.next state.reg_state in
       let state = {state with reg_state = next_state} in
       let (state, head_asm) = compile_virtual_aux state head_result_reg e1 in
-      let new_binding_state = {state with reg_of_var = SPVMap.add a head_result_reg state.reg_of_var} in
+      let new_binding_state = {state with reg_of_var = RVMap.add a head_result_reg state.reg_of_var} in
       let (state, tail_asm) = compile_virtual_aux new_binding_state result_reg e2 in
       (state, head_asm @ tail_asm)
-  | Function.ApplyKnown (g, g_args) ->
-      let arg_regs = List.map (fun v -> Reg (SPVMap.find v state.reg_of_var)) g_args in
+  | RefTracking.ApplyKnown (g, g_args) ->
+      let arg_regs = List.map (fun v -> Reg (RVMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Const (MappedRoutine g), arg_regs, result_reg)])
-  | Function.ApplyUnknown (g, g_args) ->
-      let g_reg    = SPVMap.find g state.reg_of_var in
-      let arg_regs = List.map (fun v -> Reg (SPVMap.find v state.reg_of_var)) g_args in
+  | RefTracking.ApplyUnknown (g, g_args) ->
+      let g_reg    = RVMap.find (lift_value g) state.reg_of_var in
+      let arg_regs = List.map (fun v -> Reg (RVMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Reg g_reg, arg_regs, result_reg)])
-  | Function.ArrayAlloc (size, init) ->
-      (* TODO *)
-      assert false
-  | Function.ArraySet (arr, index, v) ->
-      (* TODO *)
-      assert false
-  | Function.ArrayGet (arr, index) ->
-      (* TODO *)
-      assert false
+  | RefTracking.ArrayAlloc (size, init) ->
+      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_alloc"), [
+        Reg (RVMap.find (lift_value size) state.reg_of_var);
+        Reg (RVMap.find init state.reg_of_var)],
+        result_reg)])
+  | RefTracking.ArraySet (arr, index, v) ->
+      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_set"), [
+        Reg (RVMap.find (lift_ref arr) state.reg_of_var);
+        Reg (RVMap.find (lift_value index) state.reg_of_var);
+        Reg (RVMap.find v state.reg_of_var)],
+        result_reg)])
+  | RefTracking.ArrayGet (arr, index) ->
+      begin try
+        (state, [CALL_VS2 (Const (AsmRoutine "zml_array_get"), [
+          Reg (RVMap.find (lift_ref arr) state.reg_of_var);
+          Reg (RVMap.find (lift_value index) state.reg_of_var)],
+          result_reg)])
+      with Not_found ->
+        let () = printf "not found: %s\n" (RefID.to_string arr) in
+        assert false
+      end
+  | RefTracking.RefClone r ->
+      (state, [CALL_VS2 (Const (AsmRoutine "zml_ref_clone"),
+        [Reg (RVMap.find (lift_ref r) state.reg_of_var)],
+        result_reg)])
+  | RefTracking.RefRelease r ->
+      (state, [CALL_VS2 (Const (AsmRoutine "zml_ref_release"),
+        [Reg (RVMap.find (lift_ref r) state.reg_of_var)],
+        result_reg)])
 
 
 (* Compile a binary integer operation. *)
 and compile_virtual_binary_int state result_reg f a b = (
   state,
-  [f (Reg (SPVMap.find a state.reg_of_var)) (Reg (SPVMap.find b state.reg_of_var)) result_reg]
+  [f (Reg (RVMap.find (lift_value a) state.reg_of_var))
+    (Reg (RVMap.find (lift_value b) state.reg_of_var)) result_reg]
 )
 
 (* Compile an IfEq or IfLess form. *)
@@ -251,8 +296,8 @@ and compile_virtual_if state result_reg is_cmp_equality a b e1 e2 =
   let true_label = state.label_count in
   let exit_label = true_label + 1 in
   let branch_inst =
-    let a_reg = Reg (SPVMap.find a state.reg_of_var) in
-    let b_reg = Reg (SPVMap.find b state.reg_of_var) in
+    let a_reg = Reg (RVMap.find (lift_value a) state.reg_of_var) in
+    let b_reg = Reg (RVMap.find (lift_value b) state.reg_of_var) in
     if is_cmp_equality then
       [JE (a_reg, b_reg, true_label)]
     else
@@ -270,8 +315,8 @@ and compile_virtual_if state result_reg is_cmp_equality a b e1 e2 =
 (* Compile a function to "virtual" Z5 assembly.  This is Z-machine assembly
  * with an infinite number of registers (aka "local variables") available. *)
 let compile_virtual
-  (f_args : SPVar.t list)       (* Function arguments *)
-  (f_body : Function.t)         (* Function body *)
+  (f_args : sp_var_t list)      (* Function arguments *)
+  (f_body : RefTracking.t)      (* Function body *)
     : (VReg.t list)             (* Virtual registers assigned to function arguments *)
     * (VReg.t t list)           (* Generated virtual assembly *)
     * VRegState.t =             (* State of virtual register allocation *)
@@ -287,13 +332,13 @@ let compile_virtual
     (fun acc arg ->
       let (next_state, new_reg) = VRegState.next acc.reg_state in
       {acc with
-        reg_of_var = SPVMap.add arg new_reg acc.reg_of_var;
+        reg_of_var = RVMap.add arg new_reg acc.reg_of_var;
         reg_state  = next_state})
-    {reg_of_var = SPVMap.empty; reg_state; label_count = 0}
+    {reg_of_var = RVMap.empty; reg_state; label_count = 0}
     f_args
   in
   let (state, assembly) = compile_virtual_aux init_state result_reg f_body in
-  (List.map (fun x -> SPVMap.find x state.reg_of_var) f_args,
+  (List.map (fun x -> RVMap.find x state.reg_of_var) f_args,
     assembly @ [RET (Reg result_reg)],
     state.reg_state)
 
@@ -925,7 +970,7 @@ let rec alloc_registers
 
 
 (* Compile a function, yielding an assembly listing for the function body. *)
-let compile (f_args : SPVar.t list) (f_body : Function.t) : ZReg.t t list =
+let compile (f_args : sp_var_t list) (f_body : RefTracking.t) : ZReg.t t list =
   let virtual_args, virtual_asm, vreg_alloc_state = compile_virtual f_args f_body in
   alloc_registers virtual_args virtual_asm vreg_alloc_state
 

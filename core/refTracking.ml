@@ -66,6 +66,8 @@ type sp_var_t =
 
 let string_of_sp_var x = match x with Value v -> ValID.to_string v | Ref r -> RefID.to_string r
 
+module VMap = Map.Make(ValID)
+
 
 type t =
   | Unit                                        (* Unit literal *)
@@ -100,9 +102,9 @@ type function_t = {
 
 type program_t = {
   (* List of known functions, each indexed by a unique variable id *)
-  functions   : function_t SPVMap.t;
+  functions   : function_t VMap.t;
   (* Function to be invoked as program entry point (with type "unit -> unit") *)
-  entry_point : SPVar.t
+  entry_point : ValID.t
 }
 
 
@@ -179,7 +181,7 @@ let string_of_function id (f : function_t) : string =
   | NativeFunc (f_args, f_body) ->
     (sprintf "(* %s *)\nlet %s %s =\n"
       f.f_name
-      (SPVar.to_string id)
+      (ValID.to_string id)
       (String.concat " " (List.map string_of_sp_var f_args))) ^
     (string_of_expr ~indent_level:1 f_body)
   | ExtFunc (ext_impl, _) ->
@@ -187,7 +189,7 @@ let string_of_function id (f : function_t) : string =
 
 
 let string_of_program (a : program_t) =
-  let function_strings = SPVMap.fold
+  let function_strings = VMap.fold
     (fun f_id f_def acc -> (string_of_function f_id f_def) :: acc)
     a.functions
     []
@@ -249,12 +251,12 @@ let identify_ref_clones_program (program : Function.program_t) : program_t =
               f_impl = ExtFunc (asm_name, arg_count)
             }
         in
-        SPVMap.add f_id annot_f acc)
+        VMap.add (ValID.of_var f_id) annot_f acc)
       program.Function.functions
-      SPVMap.empty
+      VMap.empty
   in {
     functions   = annot_functions;
-    entry_point = program.Function.entry_point
+    entry_point = ValID.of_var program.Function.entry_point
   }
 
 
@@ -452,7 +454,7 @@ let insert_ref_release (expr : t) : t =
 (* Rewrite the [program] inserting code for automatic management of reference lifetimes. *)
 let insert_ref_management (program : Function.program_t) : program_t =
   let clone_annot_prog = identify_ref_clones_program program in
-  let release_annot_func = SPVMap.fold
+  let release_annot_func = VMap.fold
     (fun f_id f acc ->
       let impl =
         match f.f_impl with
@@ -461,9 +463,9 @@ let insert_ref_management (program : Function.program_t) : program_t =
         | ExtFunc _ ->
             f.f_impl
       in
-      SPVMap.add f_id {f with f_impl = impl} acc)
+      VMap.add f_id {f with f_impl = impl} acc)
     clone_annot_prog.functions
-    SPVMap.empty
+    VMap.empty
   in { clone_annot_prog with
     functions = release_annot_func;
   }
