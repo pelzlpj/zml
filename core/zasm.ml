@@ -177,7 +177,7 @@ let asm_fun_name_of_id (program : RefTracking.program_t) (f_id : ValID.t) =
 
 
 type compile_state_t = {
-  reg_of_var : VReg.t RVMap.t;   (* Maps RefTracking.t variables to virtual Z-Machine registers *)
+  reg_of_var : VReg.t RVMap.t;  (* Maps RefTracking.t variables to virtual Z-Machine registers *)
   reg_state  : VRegState.t;     (* Tracks virtual registers used *)
   label_count: int              (* Number of labels emitted *)
 }
@@ -244,10 +244,15 @@ let rec compile_virtual_aux
       let arg_regs = List.map (fun v -> Reg (RVMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Reg g_reg, arg_regs, result_reg)])
   | RefTracking.ArrayAlloc (size, init) ->
-      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_alloc"), [
-        Reg (RVMap.find (lift_value size) state.reg_of_var);
-        Reg (RVMap.find init state.reg_of_var)],
-        result_reg)])
+      begin try
+        (state, [CALL_VS2 (Const (AsmRoutine "zml_array_alloc"), [
+          Reg (RVMap.find (lift_value size) state.reg_of_var);
+          Reg (RVMap.find init state.reg_of_var)],
+          result_reg)])
+      with Not_found ->
+        let () = printf "not found: %s\n" (RefTracking.string_of_sp_var init) in
+        assert false
+      end
   | RefTracking.ArraySet (arr, index, v) ->
       (state, [CALL_VS2 (Const (AsmRoutine "zml_array_set"), [
         Reg (RVMap.find (lift_ref arr) state.reg_of_var);
@@ -255,15 +260,10 @@ let rec compile_virtual_aux
         Reg (RVMap.find v state.reg_of_var)],
         result_reg)])
   | RefTracking.ArrayGet (arr, index) ->
-      begin try
-        (state, [CALL_VS2 (Const (AsmRoutine "zml_array_get"), [
-          Reg (RVMap.find (lift_ref arr) state.reg_of_var);
-          Reg (RVMap.find (lift_value index) state.reg_of_var)],
-          result_reg)])
-      with Not_found ->
-        let () = printf "not found: %s\n" (RefID.to_string arr) in
-        assert false
-      end
+      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_get"), [
+        Reg (RVMap.find (lift_ref arr) state.reg_of_var);
+        Reg (RVMap.find (lift_value index) state.reg_of_var)],
+        result_reg)])
   | RefTracking.RefClone r ->
       (state, [CALL_VS2 (Const (AsmRoutine "zml_ref_clone"),
         [Reg (RVMap.find (lift_ref r) state.reg_of_var)],

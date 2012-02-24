@@ -86,8 +86,11 @@ let ref_var   (v : VarID.t) = {SPVar.id = v.VarID.id; SPVar.storage = Ref}
 (* Use a variable's type information to infer its storage policy *)
 let infer_storage (v : VarID.t) =
   match v.VarID.tp with
-  | Type.Unit | Type.Bool _ | Type.Int _ | Type.Arrow _ ->
+  | Type.Unit | Type.Bool _ | Type.Int _ ->
       value_var v
+  | Type.Arrow _ ->
+      (* Any first-class treatment of a function results in a closure reference. *)
+      ref_var v
   | Type.Var _ ->
       (* Polymorphic type... *)
       assert false
@@ -237,39 +240,6 @@ let rec free_variables ?(acc=VSet.empty) (bound_vars : VSet.t) (expr : Normal.t)
 
 
 
-(*
-(* Insert RefRelease calls to clean up the list of [refs] before evaluating the [expr]. *)
-let rec insert_refs_release refs expr =
-  match refs with
-  | []          -> expr
-  | ref :: tail -> Let (Normal.free_var (), RefRelease ref, insert_refs_release tail expr)
-*)
-
-
-(* Rewrite first-class occurrences of [f_id] so they become occurrences of [h_id]. *)
-let rec replace_fun_id f_id h_id (expr : Normal.t) : Normal.t =
-  let rewrite e = replace_fun_id f_id h_id e in
-  let sub x = if x = f_id then h_id else x in
-  match expr with
-  | Normal.Unit | Normal.Int _ | Normal.BinaryOp _ | Normal.UnaryOp _ ->
-      expr
-  | Normal.Conditional (cond, a, b, e1, e2) ->
-      Normal.Conditional (cond, a, b, rewrite e1, rewrite e2)
-  | Normal.Var a ->
-      Normal.Var (sub a)
-  | Normal.Let (a, e1, e2) ->
-      Normal.Let (a, rewrite e1, rewrite e2)
-  | Normal.LetFun (g_name, g_id, g_args, g_body, g_scope_expr) ->
-      Normal.LetFun (g_name, g_id, g_args, rewrite g_body, rewrite g_scope_expr)
-  | Normal.External (g_name, g_id, g_asm_name, g_arg_count, g_scope_expr) ->
-      Normal.External (g_name, g_id, g_asm_name, g_arg_count, rewrite g_scope_expr)
-  | Normal.Apply (g_id, g_args) ->
-      (* Note: if [g_id] = [f_id], that's not considered a "first-class" occurrence and does not
-       * need to be rewritten.  [extract_functions_aux] will detect that a closure is being invoked
-       * if it finds [g_id] in the [callable_ids] map. *)
-      Normal.Apply (g_id, List.map sub g_args)
-
-
 (* Construct a closure definition.  The code which defines the function is transformed into code which
  * allocates an array and stores its free variables into the array. *)
 let make_closure_def 
@@ -279,9 +249,6 @@ let make_closure_def
   (scope_expr : Normal.t)             (* Expression in which the closure will be in scope *)
   (extract_fun : Normal.t -> t)       (* Method for extracting functions from a subexpression *)
     : t =
-  (* Rewrite the scope_expr so it refers to the closure_id instead of f_id *)
-  let typed_closure_id = {VarID.id = closure_id.SPVar.id; VarID.tp = f_id.VarID.tp} in
-  let scope_expr = replace_fun_id f_id typed_closure_id scope_expr in
   (* Prefix the expression with all the array_set operations necessary to init the closure *)
   let (_, expr_with_array_init) = VSet.fold
     (fun free_var (ofs, exp) ->
@@ -423,7 +390,19 @@ let rec extract_functions_aux
   | Normal.Int x               -> Int x
   | Normal.BinaryOp (op, a, b) -> BinaryOp (op, infer_storage a, infer_storage b)
   | Normal.UnaryOp (op, a)     -> UnaryOp  (op, infer_storage a)
-  | Normal.Var a               -> Var (infer_storage a)
+  | Normal.Var a ->
+      begin try
+        (* If an identifier was closure-converted, here we use a reference to the closure array
+         * instead of the converted identifier. *)
+        let f = VMap.find a callable_ids in
+        match f with
+        | Known ->
+            Var (value_var a)
+        | Closure r ->
+            Var r
+        with Not_found ->
+            Var (infer_storage a)
+      end
   | Normal.Conditional (cond, a, b, e1, e2) ->
       Conditional (cond, infer_storage a, infer_storage b, extract_functions_aux callable_ids e1,
         extract_functions_aux callable_ids e2)
@@ -441,7 +420,8 @@ let rec extract_functions_aux
         let callable_ids = VMap.add f_id Known callable_ids in
         let body_extracted = extract_functions_aux callable_ids f_body in
         let () = add_function_def (value_var f_id)
-          {f_name; f_impl = NativeFunc (List.map infer_storage f_args, body_extracted)} in
+          {f_name; f_impl = NativeFunc (List.map infer_storage f_args, body_extracted)}
+        in
         extract_functions_aux callable_ids f_scope_expr
       else
         (* Closure conversion. *)
