@@ -344,9 +344,9 @@ let rec make_control_flow_graph
       in
       let e2_map    = make_control_flow_graph state e2 in
       let e1_e2_map = make_control_flow_graph {map = e2_map; binding; scope_expr = Some e2} e1 in
-      (* The let-binding node itself has only a trivial entry in the CFG; it's just a pass-through to [e1].
-       * This ensures that the inputs of [e1] and [e2] are both propagated up correctly during
-       * liveness analysis. *)
+      (* The let-binding node itself has only a trivial entry in the CFG; it's just a pass-through
+       * to [e1].  This ensures that the inputs of [e1] and [e2] are both propagated up correctly
+       * during liveness analysis. *)
       TMap.add expr {
         successor = Some e1;
         inputs    = RSet.empty;
@@ -411,23 +411,28 @@ let rec insert_ref_release_aux
         insert_ref_release_aux ~local_refs ~curr_binding liveness e1,
         insert_ref_release_aux ~local_refs ~curr_binding liveness e2)
   | Let (a, e1, e2) ->
-      let e2_local_refs =
+      (* Note: most of the cleanup work is done below, but there's a corner case to catch here.
+       * If [a] is a reference-type binding which is never used in [e2], then we release immediately. *)
+      let e2_live = LSolver.IdMap.find e2 liveness in
+      let (e2_local_refs, unused_binding_opt) =
         match a with
-        | Value v -> local_refs
-        | Ref   r -> RSet.add r local_refs
+        | Value v -> (local_refs, None)
+        | Ref   r -> (RSet.add r local_refs, if RSet.mem r e2_live.LSolver.live_in then None else Some r)
       in
+      let e2_with_release = insert_ref_release_aux ~local_refs:e2_local_refs ~curr_binding liveness e2 in
       Let (a,
         insert_ref_release_aux ~local_refs ~curr_binding:(Some a) liveness e1,
-        insert_ref_release_aux ~local_refs:e2_local_refs ~curr_binding liveness e2)
+        match unused_binding_opt with
+        | None   -> e2_with_release
+        | Some r -> Let (free_value_var (), RefRelease r, e2_with_release))
   | Unit | Int _ | BinaryOp _ | UnaryOp _ | Var _ | KnownFuncVar _
   | ApplyKnown _ | ApplyUnknown _ | ArrayAlloc _
   | ArraySet _ | ArrayGet _ | RefClone _ | RefRelease _ ->
       begin match curr_binding with
       | Some binding ->
         let expr_live = LSolver.IdMap.find expr liveness in
-        let dead_local_refs = RSet.inter local_refs
-          (RSet.diff expr_live.LSolver.live_in expr_live.LSolver.live_out)
-        in
+        let dead_refs = RSet.diff expr_live.LSolver.live_in expr_live.LSolver.live_out in
+        let dead_local_refs = RSet.inter local_refs dead_refs in
         if RSet.is_empty dead_local_refs then
           expr
         else
