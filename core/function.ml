@@ -48,7 +48,8 @@ type t =
   | BinaryOp of binary_op_t * var_t * var_t         (* Binary integer operation *)
   | UnaryOp of unary_op_t * var_t                   (* Unary integer operation *)
   | Conditional of cond_t * var_t * var_t * t * t   (* Conditional form *)
-  | Var of var_t                                    (* Bound variable reference *)
+  | Var of var_t                                    (* Bound variable reference (not a known function) *)
+  | KnownFuncVar of var_t                           (* Known function reference *)
   | Let of var_t * t * t                            (* Let binding for a variable *)
   | ApplyKnown of var_t * (var_t list)              (* Application of "known" function *)
   | ApplyUnknown of var_t * (var_t list)            (* Application of an "unknown" function
@@ -128,7 +129,7 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : stri
         (make_indent indent_level)
         (match d with Let _ | Conditional _ -> "" | _ -> (make_indent (indent_level + 1)))
         (string_of_expr ~indent_level:(indent_level + 1) d)
-  | Var a ->
+  | Var a | KnownFuncVar a ->
       SPVar.to_string a
   | Let (a, b, c) ->
       begin match b with
@@ -287,13 +288,15 @@ let make_closure_def
    * function itself (boxed), so that the entire closure can be passed around as a first-class
    * value. *)
   let box_size_id      = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+  let known_func_id    = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
   let closure_func_ref = {SPVar.id = Normal.free_var (); SPVar.storage = Ref} in
   let closure_size_id  = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
   Let (box_size_id, Int 1,
-    Let (closure_func_ref, ArrayAlloc (box_size_id, value_var f_id),
-      Let (closure_size_id, Int (1 + (VSet.cardinal free_vars)),
-        Let (closure_id, ArrayAlloc (closure_size_id, closure_func_ref),
-          expr_with_array_init))))
+    Let (known_func_id, KnownFuncVar (value_var f_id),
+      Let (closure_func_ref, ArrayAlloc (box_size_id, known_func_id),
+        Let (closure_size_id, Int (1 + (VSet.cardinal free_vars)),
+          Let (closure_id, ArrayAlloc (closure_size_id, closure_func_ref),
+            expr_with_array_init)))))
 
 
 (* Construct the body for a function which is invoked using the calling convention for closures. *)
@@ -397,11 +400,11 @@ let rec extract_functions_aux
         let f = VMap.find a callable_ids in
         match f with
         | Known ->
-            Var (value_var a)
+            KnownFuncVar (value_var a)
         | Closure r ->
             Var r
         with Not_found ->
-            Var (infer_storage a)
+          Var (infer_storage a)
       end
   | Normal.Conditional (cond, a, b, e1, e2) ->
       Conditional (cond, infer_storage a, infer_storage b, extract_functions_aux callable_ids e1,

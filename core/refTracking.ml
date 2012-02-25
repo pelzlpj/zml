@@ -39,7 +39,9 @@ module type OPAQUE_ID = sig
   val compare : t -> t -> int
   val of_var : SPVar.t -> t
   val to_string : t -> string
+  val to_int_string : t -> string
 end
+
 
 (* Opaque identifier for value-type variables *)
 module ValID : OPAQUE_ID = struct
@@ -47,7 +49,11 @@ module ValID : OPAQUE_ID = struct
   let compare a b = if a < b then -1 else if a > b then 1 else 0
   let of_var x = match x.SPVar.storage with Function.Value -> x.SPVar.id | Function.Ref -> assert false
   let to_string x = sprintf "vv%d" x
+  let to_int_string x = sprintf "%d" x
 end
+
+module VMap = Map.Make(ValID)
+
 
 (* Opaque identifier for reference-type variables *)
 module RefID : OPAQUE_ID = struct
@@ -55,9 +61,11 @@ module RefID : OPAQUE_ID = struct
   let compare a b = if a < b then -1 else if a > b then 1 else 0
   let of_var x = match x.SPVar.storage with Function.Ref -> x.SPVar.id | Function.Value -> assert false
   let to_string x = sprintf "rv%d" x
+  let to_int_string x = sprintf "%d" x
 end
 
 module RSet = Set.Make(RefID)
+
 
 (* Opaque identifier for variables with arbitrary storage policy *)
 type sp_var_t =
@@ -66,7 +74,6 @@ type sp_var_t =
 
 let string_of_sp_var x = match x with Value v -> ValID.to_string v | Ref r -> RefID.to_string r
 
-module VMap = Map.Make(ValID)
 
 
 type t =
@@ -76,7 +83,8 @@ type t =
   | UnaryOp of unary_op_t * ValID.t             (* Unary integer operation *)
   | Conditional of cond_t * ValID.t * ValID.t
       * t * t                                   (* Conditional form *)
-  | Var of sp_var_t                             (* Bound variable reference *)
+  | Var of sp_var_t                             (* Bound variable reference (not a known function) *)
+  | KnownFuncVar of ValID.t                     (* Known function reference *)
   | Let of sp_var_t * t * t                     (* Let binding for a variable *)
   | ApplyKnown of ValID.t * (sp_var_t list)     (* Application of "known" function *)
   | ApplyUnknown of ValID.t * (sp_var_t list)   (* Application of an "unknown" function (computed address) *)
@@ -142,6 +150,8 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : stri
         (string_of_expr ~indent_level:(indent_level + 1) d)
   | Var a ->
       string_of_sp_var a
+  | KnownFuncVar a ->
+      (ValID.to_string a)
   | Let (a, b, c) ->
       begin match b with
       | Let _ | Conditional _ ->
@@ -224,6 +234,8 @@ let rec identify_ref_clones ?(is_binding_expr=false) (expr : Function.t) : t =
         end
       else
         Var (infer_sp_var a)
+  | Function.KnownFuncVar a ->
+      KnownFuncVar (ValID.of_var a)
   | Function.Let (a, e1, e2) ->
       Let (infer_sp_var a,
         identify_ref_clones ~is_binding_expr:true e1,
@@ -310,7 +322,7 @@ let rec make_control_flow_graph
   (expr : t)
     : cfn_t TMap.t =
   match expr with
-  | Unit | Int _ | BinaryOp _ | UnaryOp _ ->
+  | Unit | Int _ | BinaryOp _ | UnaryOp _ | KnownFuncVar _ ->
       TMap.add expr {
           successor = state.scope_expr;
           inputs    = RSet.empty;
@@ -407,7 +419,7 @@ let rec insert_ref_release_aux
       Let (a,
         insert_ref_release_aux ~local_refs ~curr_binding:(Some a) liveness e1,
         insert_ref_release_aux ~local_refs:e2_local_refs ~curr_binding liveness e2)
-  | Unit | Int _ | BinaryOp _ | UnaryOp _ | Var _
+  | Unit | Int _ | BinaryOp _ | UnaryOp _ | Var _ | KnownFuncVar _
   | ApplyKnown _ | ApplyUnknown _ | ArrayAlloc _
   | ArraySet _ | ArrayGet _ | RefClone _ | RefRelease _ ->
       begin match curr_binding with

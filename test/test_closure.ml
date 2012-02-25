@@ -19,6 +19,7 @@ let make_fun x =
   f
 in
 let g = make_fun 5 in
+let h = g in
 let z = g 6 in
 ()
 

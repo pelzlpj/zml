@@ -171,7 +171,7 @@ let asm_fun_name_of_id (program : RefTracking.program_t) (f_id : ValID.t) =
   else
     match f_def.RefTracking.f_impl with
     | RefTracking.NativeFunc _ ->
-        sprintf "%s_%s" short_name (ValID.to_string f_id)
+        sprintf "%s_%s" short_name (ValID.to_int_string f_id)
     | RefTracking.ExtFunc (ext_impl, _) ->
         ext_impl
 
@@ -212,20 +212,9 @@ let rec compile_virtual_aux
   | RefTracking.Conditional (Normal.IfLess, a, b, e1, e2) ->
       compile_virtual_if state result_reg false a b e1 e2
   | RefTracking.Var a ->
-      begin try
-        (state, [LOAD (RVMap.find a state.reg_of_var, result_reg)])
-      with Not_found ->
-        (* If there is no register associated with this variable, then
-         * this must be a reference to a function name.
-         *
-         * FIXME: this sucks and feels brittle.  The type system should encode this info. *)
-        begin match a with
-        | RefTracking.Value v ->
-            (state, [STORE (result_reg, Const (MappedRoutine v))])
-        | RefTracking.Ref _ ->
-            assert false
-        end
-      end
+      (state, [LOAD (RVMap.find a state.reg_of_var, result_reg)])
+  | RefTracking.KnownFuncVar v ->
+      (state, [STORE (result_reg, Const (MappedRoutine v))])
   | RefTracking.Let (a, e1, e2) ->
       (* "let" just leads to emitting instructions for [e1] prior to [e2],
        * with the additional constraint that [a] becomes an alias for the
