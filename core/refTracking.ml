@@ -75,7 +75,6 @@ type sp_var_t =
 let string_of_sp_var x = match x with Value v -> ValID.to_string v | Ref r -> RefID.to_string r
 
 
-
 type t =
   | Unit                                        (* Unit literal *)
   | Int of int                                  (* Integer constant *)
@@ -345,10 +344,11 @@ let rec make_control_flow_graph
       in
       let e2_map    = make_control_flow_graph state e2 in
       let e1_e2_map = make_control_flow_graph {map = e2_map; binding; scope_expr = Some e2} e1 in
-      (* The current node has only a trivial entry in the CFG; it's just there to allow the output
-       * of [e1] to flow through to [e2]. *)
+      (* The let-binding node itself has only a trivial entry in the CFG; it's just a pass-through to [e1].
+       * This ensures that the inputs of [e1] and [e2] are both propagated up correctly during
+       * liveness analysis. *)
       TMap.add expr {
-        successor = Some e2;
+        successor = Some e1;
         inputs    = RSet.empty;
         outputs   = RSet.empty;
       } e1_e2_map
@@ -424,11 +424,6 @@ let rec insert_ref_release_aux
   | ArraySet _ | ArrayGet _ | RefClone _ | RefRelease _ ->
       begin match curr_binding with
       | Some binding ->
-        let new_bind_var =
-          match binding with
-          | Value _ -> free_value_var ()
-          | Ref _   -> free_ref_var ()
-        in
         let expr_live = LSolver.IdMap.find expr liveness in
         let dead_local_refs = RSet.inter local_refs
           (RSet.diff expr_live.LSolver.live_in expr_live.LSolver.live_out)
@@ -436,6 +431,11 @@ let rec insert_ref_release_aux
         if RSet.is_empty dead_local_refs then
           expr
         else
+          let new_bind_var =
+            match binding with
+            | Value _ -> free_value_var ()
+            | Ref _   -> free_ref_var ()
+          in
           Let (new_bind_var, expr,
             RSet.fold
               (fun dead_ref acc ->
