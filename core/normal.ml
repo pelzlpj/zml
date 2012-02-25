@@ -45,7 +45,7 @@ type binary_op_t =
 type unary_op_t =
   | Neg   (* Integer negation *)
 
-type conditional_t =
+type cond_t =
   | IfEq    (* Branching on integer equality test *)
   | IfLess  (* Branching on integer ordering test *)
 
@@ -55,7 +55,7 @@ type t =
   | Int of int                                            (* Integer constant *)
   | BinaryOp of binary_op_t * var_t * var_t               (* Binary integer operation *)
   | UnaryOp of unary_op_t * var_t                         (* Unary integer operation *)
-  | Conditional of conditional_t * var_t * var_t * t * t  (* Conditional form *)
+  | Conditional of cond_t * var_t * var_t * t * t         (* Conditional form *)
   | Var of var_t                                          (* Bound variable reference *)
   | Let of var_t * t * t                                  (* Let binding for a variable *)
   | LetFun of string * var_t * (var_t list) * t * t       (* Let binding for a function definition *)

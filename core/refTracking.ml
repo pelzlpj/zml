@@ -31,7 +31,7 @@ module SPVMap = Function.SPVMap
 module SPVSet = Set.Make(SPVar)
 type binary_op_t = Function.binary_op_t
 type unary_op_t  = Function.unary_op_t
-type cond_t      = Function.conditional_t
+type cond_t      = Function.cond_t
 
 
 module type OPAQUE_ID = sig

@@ -19,9 +19,9 @@ open Printf
 module VarID = Normal.VarID
 module VMap  = Normal.VMap
 module VSet  = Normal.VSet
-type binary_op_t   = Normal.binary_op_t
-type unary_op_t    = Normal.unary_op_t
-type conditional_t = Normal.conditional_t
+type binary_op_t = Normal.binary_op_t
+type unary_op_t  = Normal.unary_op_t
+type cond_t      = Normal.cond_t
 
 
 type storage_t =
@@ -43,19 +43,19 @@ type var_t = SPVar.t
 
 
 type t =
-  | Unit                                      (* Unit literal *)
-  | Int of int                                (* Integer constant *)
-  | BinaryOp of binary_op_t * var_t * var_t   (* Binary integer operation *)
-  | UnaryOp of unary_op_t * var_t             (* Unary integer operation *)
-  | Conditional of conditional_t * var_t * var_t * t * t
-                                              (* Conditional form *)
-  | Var of var_t                              (* Bound variable reference *)
-  | Let of var_t * t * t                      (* Let binding for a variable *)
-  | ApplyKnown of var_t * (var_t list)        (* Application of "known" function *)
-  | ApplyUnknown of var_t * (var_t list)      (* Application of an "unknown" function (computed address) *)
-  | ArrayAlloc of var_t * var_t               (* Construct a new array (size, init) *)
-  | ArraySet of var_t * var_t * var_t         (* Store a ref or value in an array (arr, index, ref) *)
-  | ArrayGet of var_t * var_t                 (* Get a ref or value from an array (arr, index) *)
+  | Unit                                            (* Unit literal *)
+  | Int of int                                      (* Integer constant *)
+  | BinaryOp of binary_op_t * var_t * var_t         (* Binary integer operation *)
+  | UnaryOp of unary_op_t * var_t                   (* Unary integer operation *)
+  | Conditional of cond_t * var_t * var_t * t * t   (* Conditional form *)
+  | Var of var_t                                    (* Bound variable reference *)
+  | Let of var_t * t * t                            (* Let binding for a variable *)
+  | ApplyKnown of var_t * (var_t list)              (* Application of "known" function *)
+  | ApplyUnknown of var_t * (var_t list)            (* Application of an "unknown" function
+                                                          (i.e. call to computed address) *)
+  | ArrayAlloc of var_t * var_t                     (* Construct a new array (size, init) *)
+  | ArraySet of var_t * var_t * var_t               (* Store a ref or value in an array (arr, index, ref) *)
+  | ArrayGet of var_t * var_t                       (* Get a ref or value from an array (arr, index) *)
 
 
 type function_def_t =
