@@ -1,17 +1,20 @@
 (* Management of variable lifetimes for reference types.
  *
- * ZML's initial target is the Z-Machine, which is a pretty weird VM.  Of particular
- * note: the function call stack is largely inaccessible, which makes it impossible to
- * scan the stack for GC roots.  The workaround is to track reference types explicitly.
+ * ZML's initial target is the Z-Machine, which is a pretty weird VM.  Of particular note: the
+ * function call stack is largely inaccessible, which makes it impossible to scan the stack for GC
+ * roots.  The workaround is to track reference types explicitly.
  *
- * To this end, the ZML runtime registers references in a global roots table whenever
- * a new reference is created (allocating an array, retrieving a reference from an
- * array-of-references, etc.).  The code which calls into the runtime must explicitly
- * release these references when they fall out of scope.
+ * To this end, the ZML runtime registers references in a global roots table whenever a new
+ * reference is created (allocating an array, retrieving a reference from an array-of-references,
+ * etc.).  The code which calls into the runtime must explicitly release these references when they
+ * fall out of scope.
  *
- * This module examines the code emitted by [Function.extract_functions], and inserts
- * the code necessary to release references.  Liveness analysis is performed in
- * order to release references as early as possible.
+ * This module examines the code emitted by [Function.extract_functions], and inserts the code
+ * necessary to release references.  The simple approach here would be to use let-binding scope to
+ * determine when references should be released.  In an attempt to conserve heap memory and reduce
+ * the size of the reference table, we try to do better than the simple approach: liveness analysis
+ * is used to determine when reference types are no longer used, and these references are released
+ * as soon as possible.
  *
  * General rules for reference management:
  *    - A new reference is created when allocating a reference type (list, array, etc.).
@@ -26,9 +29,9 @@
 
 open Printf
 
-module SPVar  = Function.SPVar
-module SPVMap = Function.SPVMap
-module SPVSet = Set.Make(SPVar)
+module SPVar     = Function.SPVar
+module SPVMap    = Function.SPVMap
+module SPVSet    = Set.Make(SPVar)
 type binary_op_t = Function.binary_op_t
 type unary_op_t  = Function.unary_op_t
 type cond_t      = Function.cond_t
@@ -425,13 +428,29 @@ let rec insert_ref_release_aux
   (* FIXME: correct, but hacky *)
   let free_value_var () = infer_sp_var {SPVar.id = Normal.free_var(); SPVar.storage = Function.Value} in
   let free_ref_var ()   = infer_sp_var {SPVar.id = Normal.free_var(); SPVar.storage = Function.Ref} in
+  let insert_release_let ref expr = {
+    id = free_expr_id ();
+    expr = Let (free_value_var (),
+      {id = free_expr_id (); expr = RefRelease ref},
+      expr)
+  } in
   match expr.expr with
   | Conditional (cond, a, b, e1, e2) ->
-      {expr with expr = Conditional (cond, a, b,
-        insert_ref_release_aux ~local_refs ~curr_binding liveness e1,
-        insert_ref_release_aux ~local_refs ~curr_binding liveness e2)}
+      (* There is one corner case where we emit cleanup code associated with a conditional.  If
+       * a variable is live in one branch but dead in the other branch, we immediately release the
+       * variable on the branch where it is dead. *)
+      let expr_live = (LSolver.IdMap.find expr liveness).LSolver.live_out in
+      let branch_cleanup branch_expr =
+        let live_info = LSolver.IdMap.find branch_expr liveness in
+        let dead_refs = RSet.diff expr_live live_info.LSolver.live_in in
+        RSet.fold
+          (fun dead_ref acc -> insert_release_let dead_ref acc)
+          dead_refs
+          (insert_ref_release_aux ~local_refs ~curr_binding liveness branch_expr)
+      in
+      {expr with expr = Conditional (cond, a, b, branch_cleanup e1, branch_cleanup e2)}
   | Let (a, e1, e2) ->
-      (* Note: most of the cleanup work is done below, but there's a corner case to catch here.
+      (* There is one corner case where we emit cleanup code associated with the let-binding.
        * If [a] is a reference-type binding which is never used in [e2], then we release immediately. *)
       let e2_live = LSolver.IdMap.find e2 liveness in
       let (e2_local_refs, unused_binding_opt) =
@@ -443,13 +462,8 @@ let rec insert_ref_release_aux
       {expr with expr = Let (a,
         insert_ref_release_aux ~local_refs ~curr_binding:(Some a) liveness e1,
         match unused_binding_opt with
-        | None ->
-            e2_with_release
-        | Some r -> {
-            id = free_expr_id ();
-            expr = Let (free_value_var (), {
-              id = free_expr_id ();
-              expr = RefRelease r}, e2_with_release)})}
+        | None   -> e2_with_release
+        | Some r -> insert_release_let r e2_with_release)}
   | Unit | Int _ | BinaryOp _ | UnaryOp _ | Var _ | KnownFuncVar _
   | ApplyKnown _ | ApplyUnknown _ | ArrayAlloc _
   | ArraySet _ | ArrayGet _ | RefClone _ | RefRelease _ ->
@@ -469,11 +483,10 @@ let rec insert_ref_release_aux
             id = free_expr_id ();
             expr = Let (new_bind_var, expr,
               RSet.fold
-                (fun dead_ref acc -> {
-                   id   = free_expr_id ();
-                   expr = Let (free_value_var (), {id = free_expr_id (); expr = RefRelease dead_ref}, acc)})
+                (fun dead_ref acc -> insert_release_let dead_ref acc)
                 dead_local_refs
-                {id = free_expr_id (); expr = Var new_bind_var})}
+                {id = free_expr_id (); expr = Var new_bind_var})
+          }
       | None ->
           (* Not an intermediate expression *)
           expr
