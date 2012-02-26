@@ -1,4 +1,4 @@
-(* Compilation of functions (i.e. [RefTracking.function_t]) into Z-Machine assembly.
+(* Compilation of functions (i.e. [IR.function_t]) into Z-Machine assembly.
  *
  * No assumptions are made within this module regarding the specific format in which the Z-Machine
  * instructions should be emitted for assembly.  See module [Zapf] for code which targets the Zapf
@@ -7,10 +7,10 @@
 
 open Printf
 
-module ValID  = RefTracking.ValID
-module RefID  = RefTracking.RefID
-module VMap   = RefTracking.VMap
-type sp_var_t = RefTracking.sp_var_t
+module ValID  = IR.ValID
+module RefID  = IR.RefID
+module VMap   = IR.VMap
+type sp_var_t = IR.sp_var_t
 
 
 module RV = struct
@@ -38,7 +38,7 @@ let lift_ref   a = RefTracking.Ref a
  *
  * The compilation strategy proceeds in two phases:
  *
- *    1) Given a function to compile, of type [RefTracking.function_t], generate
+ *    1) Given a function to compile, of type [IR.function_t], generate
  *       "virtual" Z-Machine assembly which implements the function.  This is
  *       assembly which targets a Z-Machine with an infinite number of registers
  *       (aka "local variables") available.
@@ -137,7 +137,7 @@ type 'a operand_t =
 
 
 (* We need only a small subset of Z-machine opcodes in order to implement
- * [RefTracking.expr_t].  In the future, it may prove useful to use additional
+ * [IR.expr_t].  In the future, it may prove useful to use additional
  * opcodes to handle special cases.  It probably won't matter for performance,
  * but the code size could be reduced by using more compact instructions. *)
 type 'a t =
@@ -163,21 +163,21 @@ let local_variable_count = 14   (* excluding 'sp' *)
 
 
 (* Construct an assembly function identifier from a function ID. *)
-let asm_fun_name_of_id (program : RefTracking.program_t) (f_id : ValID.t) =
-  let f_def = VMap.find f_id program.RefTracking.functions in
-  let short_name = f_def.RefTracking.f_name in
-  if f_id = program.RefTracking.entry_point then
+let asm_fun_name_of_id (program : IR.program_t) (f_id : ValID.t) =
+  let f_def = VMap.find f_id program.IR.functions in
+  let short_name = f_def.IR.f_name in
+  if f_id = program.IR.entry_point then
     short_name
   else
-    match f_def.RefTracking.f_impl with
-    | RefTracking.NativeFunc _ ->
+    match f_def.IR.f_impl with
+    | IR.NativeFunc _ ->
         sprintf "%s_%s" short_name (ValID.to_int_string f_id)
-    | RefTracking.ExtFunc (ext_impl, _) ->
+    | IR.ExtFunc (ext_impl, _) ->
         ext_impl
 
 
 type compile_state_t = {
-  reg_of_var : VReg.t RVMap.t;  (* Maps RefTracking.t variables to virtual Z-Machine registers *)
+  reg_of_var : VReg.t RVMap.t;  (* Maps IR.t variables to virtual Z-Machine registers *)
   reg_state  : VRegState.t;     (* Tracks virtual registers used *)
   label_count: int              (* Number of labels emitted *)
 }
@@ -185,16 +185,16 @@ type compile_state_t = {
 let rec compile_virtual_aux
   (state : compile_state_t)   (* Compilation context *)
   (result_reg)                (* Register which should be used to store the result *)
-  (expr : RefTracking.t)      (* Expression to be compiled *)
+  (expr : IR.t)               (* Expression to be compiled *)
     : compile_state_t         (* New context *)
     * VReg.t t list =         (* List of instructions for the expression *)
   match expr with
-  | RefTracking.Unit ->
+  | IR.Unit ->
       (* For now we're treating unit as integer zero.  It shouldn't matter. *)
-      compile_virtual_aux state result_reg (RefTracking.Int 0)
-  | RefTracking.Int i ->
+      compile_virtual_aux state result_reg (IR.Int 0)
+  | IR.Int i ->
       (state, [STORE (result_reg, Const (ConstNum i))])
-  | RefTracking.BinaryOp (op, a, b) ->
+  | IR.BinaryOp (op, a, b) ->
       let ctor =
         match op with
         | Normal.Add -> (fun x y z -> ADD (x, y, z))
@@ -204,18 +204,18 @@ let rec compile_virtual_aux
         | Normal.Mod -> (fun x y z -> MOD (x, y, z))
       in
       compile_virtual_binary_int state result_reg ctor a b
-  | RefTracking.UnaryOp (Normal.Neg, a) ->
+  | IR.UnaryOp (Normal.Neg, a) ->
       (* Negation is implemented as subtraction from zero. *)
       (state, [SUB (Const (ConstNum 0), Reg (RVMap.find (lift_value a) state.reg_of_var), result_reg)])
-  | RefTracking.Conditional (Normal.IfEq, a, b, e1, e2) ->
+  | IR.Conditional (Normal.IfEq, a, b, e1, e2) ->
       compile_virtual_if state result_reg true a b e1 e2
-  | RefTracking.Conditional (Normal.IfLess, a, b, e1, e2) ->
+  | IR.Conditional (Normal.IfLess, a, b, e1, e2) ->
       compile_virtual_if state result_reg false a b e1 e2
-  | RefTracking.Var a ->
+  | IR.Var a ->
       (state, [LOAD (RVMap.find a state.reg_of_var, result_reg)])
-  | RefTracking.KnownFuncVar v ->
+  | IR.KnownFuncVar v ->
       (state, [STORE (result_reg, Const (MappedRoutine v))])
-  | RefTracking.Let (a, e1, e2) ->
+  | IR.Let (a, e1, e2) ->
       (* "let" just leads to emitting instructions for [e1] prior to [e2],
        * with the additional constraint that [a] becomes an alias for the
        * [e1] result register while compiling [e2]. *)
@@ -225,39 +225,34 @@ let rec compile_virtual_aux
       let new_binding_state = {state with reg_of_var = RVMap.add a head_result_reg state.reg_of_var} in
       let (state, tail_asm) = compile_virtual_aux new_binding_state result_reg e2 in
       (state, head_asm @ tail_asm)
-  | RefTracking.ApplyKnown (g, g_args) ->
+  | IR.ApplyKnown (g, g_args) ->
       let arg_regs = List.map (fun v -> Reg (RVMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Const (MappedRoutine g), arg_regs, result_reg)])
-  | RefTracking.ApplyUnknown (g, g_args) ->
+  | IR.ApplyUnknown (g, g_args) ->
       let g_reg    = RVMap.find (lift_value g) state.reg_of_var in
       let arg_regs = List.map (fun v -> Reg (RVMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Reg g_reg, arg_regs, result_reg)])
-  | RefTracking.ArrayAlloc (size, init) ->
-      begin try
-        (state, [CALL_VS2 (Const (AsmRoutine "zml_array_alloc"), [
-          Reg (RVMap.find (lift_value size) state.reg_of_var);
-          Reg (RVMap.find init state.reg_of_var)],
-          result_reg)])
-      with Not_found ->
-        let () = printf "not found: %s\n" (RefTracking.string_of_sp_var init) in
-        assert false
-      end
-  | RefTracking.ArraySet (arr, index, v) ->
+  | IR.ArrayAlloc (size, init) ->
+      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_alloc"), [
+        Reg (RVMap.find (lift_value size) state.reg_of_var);
+        Reg (RVMap.find init state.reg_of_var)],
+        result_reg)])
+  | IR.ArraySet (arr, index, v) ->
       (state, [CALL_VS2 (Const (AsmRoutine "zml_array_set"), [
         Reg (RVMap.find (lift_ref arr) state.reg_of_var);
         Reg (RVMap.find (lift_value index) state.reg_of_var);
         Reg (RVMap.find v state.reg_of_var)],
         result_reg)])
-  | RefTracking.ArrayGet (arr, index) ->
+  | IR.ArrayGet (arr, index) ->
       (state, [CALL_VS2 (Const (AsmRoutine "zml_array_get"), [
         Reg (RVMap.find (lift_ref arr) state.reg_of_var);
         Reg (RVMap.find (lift_value index) state.reg_of_var)],
         result_reg)])
-  | RefTracking.RefClone r ->
+  | IR.RefClone r ->
       (state, [CALL_VS2 (Const (AsmRoutine "zml_ref_clone"),
         [Reg (RVMap.find (lift_ref r) state.reg_of_var)],
         result_reg)])
-  | RefTracking.RefRelease r ->
+  | IR.RefRelease r ->
       (state, [CALL_VS2 (Const (AsmRoutine "zml_ref_release"),
         [Reg (RVMap.find (lift_ref r) state.reg_of_var)],
         result_reg)])
@@ -305,7 +300,7 @@ and compile_virtual_if state result_reg is_cmp_equality a b e1 e2 =
  * with an infinite number of registers (aka "local variables") available. *)
 let compile_virtual
   (f_args : sp_var_t list)      (* Function arguments *)
-  (f_body : RefTracking.t)      (* Function body *)
+  (f_body : IR.t)      (* Function body *)
     : (VReg.t list)             (* Virtual registers assigned to function arguments *)
     * (VReg.t t list)           (* Generated virtual assembly *)
     * VRegState.t =             (* State of virtual register allocation *)
@@ -959,7 +954,7 @@ let rec alloc_registers
 
 
 (* Compile a function, yielding an assembly listing for the function body. *)
-let compile (f_args : sp_var_t list) (f_body : RefTracking.t) : ZReg.t t list =
+let compile (f_args : sp_var_t list) (f_body : IR.t) : ZReg.t t list =
   let virtual_args, virtual_asm, vreg_alloc_state = compile_virtual f_args f_body in
   alloc_registers virtual_args virtual_asm vreg_alloc_state
 

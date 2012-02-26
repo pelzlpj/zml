@@ -75,7 +75,12 @@ type sp_var_t =
 let string_of_sp_var x = match x with Value v -> ValID.to_string v | Ref r -> RefID.to_string r
 
 
-type t =
+type t = {
+  id   : int;     (* Locally-unique identifier attached to this expression *)
+  expr : expr_t
+}
+
+and expr_t =
   | Unit                                        (* Unit literal *)
   | Int of int                                  (* Integer constant *)
   | BinaryOp of binary_op_t * ValID.t * ValID.t (* Binary integer operation *)
@@ -92,6 +97,7 @@ type t =
   | ArrayGet of RefID.t * ValID.t               (* Get a ref or value from an array (arr, index) *)
   | RefClone of RefID.t                         (* Create new references which points to same object *)
   | RefRelease of RefID.t                       (* Release a reference *)
+
 
 
 type function_def_t =
@@ -122,7 +128,7 @@ type program_t = {
  *  - The "true" and "false" expressions in an if-then-else are both indented. *)
 let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : string =
   let make_indent level = String.make (level * chars_per_indent) ' ' in
-  match expr with
+  match expr.expr with
   | Unit -> "()"
   | Int i -> string_of_int i
   | BinaryOp (op, a, b) ->
@@ -142,31 +148,31 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : stri
         (ValID.to_string a)
         (match cond with Normal.IfEq -> "=" | Normal.IfLess -> "<")
         (ValID.to_string b)
-        (match c with Let _ | Conditional _ -> "" | _ -> (make_indent (indent_level + 1)))
+        (match c.expr with Let _ | Conditional _ -> "" | _ -> (make_indent (indent_level + 1)))
         (string_of_expr ~indent_level:(indent_level + 1) c)
         (make_indent indent_level)
-        (match d with Let _ | Conditional _ -> "" | _ -> (make_indent (indent_level + 1)))
+        (match d.expr with Let _ | Conditional _ -> "" | _ -> (make_indent (indent_level + 1)))
         (string_of_expr ~indent_level:(indent_level + 1) d)
   | Var a ->
       string_of_sp_var a
   | KnownFuncVar a ->
       (ValID.to_string a)
   | Let (a, b, c) ->
-      begin match b with
+      begin match b.expr with
       | Let _ | Conditional _ ->
           sprintf "%slet %s =\n%s\n%sin\n%s%s"
             (make_indent indent_level)
             (string_of_sp_var a)
             (string_of_expr ~indent_level:(indent_level + 1) b)
             (make_indent indent_level)
-            (match c with | Let _ | Conditional _ -> "" | _ -> (make_indent indent_level))
+            (match c.expr with | Let _ | Conditional _ -> "" | _ -> (make_indent indent_level))
             (string_of_expr ~indent_level c)
       | _ ->
           sprintf "%slet %s = %s in\n%s%s"
             (make_indent indent_level)
             (string_of_sp_var a)
             (string_of_expr ~indent_level b)
-            (match c with | Let _ | Conditional _ -> "" | _ -> (make_indent indent_level))
+            (match c.expr with | Let _ | Conditional _ -> "" | _ -> (make_indent indent_level))
             (string_of_expr ~indent_level c)
       end
   | ApplyKnown (f, args) ->
@@ -212,38 +218,51 @@ let infer_sp_var v =
   | Function.Ref   -> Ref   (RefID.of_var v)
 
 
+let expr_id_count = ref 0
+
+let free_expr_id () =
+  let result = !expr_id_count in
+  let () = incr expr_id_count in
+  result
+
+
 (* Find locations where a reference type is cloned, and annotate them with a cloning operation.
  * We consider a reference type to be cloned whenever a Let expression is binding to a
- * reference-type Var.  *)
+ * reference-type Var.
+ *
+ * As a side-effect, unique identifiers are attached to every subexpression in the tree. *)
 let rec identify_ref_clones ?(is_binding_expr=false) (expr : Function.t) : t =
-  match expr with
-  | Function.Unit                -> Unit
-  | Function.Int x               -> Int x
-  | Function.BinaryOp (op, a, b) -> BinaryOp (op, ValID.of_var a, ValID.of_var b)
-  | Function.UnaryOp (op, a)     -> UnaryOp (op, ValID.of_var a)
-  | Function.Conditional (cond, a, b, e1, e2) ->
-      Conditional (cond, ValID.of_var a, ValID.of_var b,
-        identify_ref_clones ~is_binding_expr e1,
-        identify_ref_clones ~is_binding_expr e2)
-  | Function.Var a ->
-      if is_binding_expr then
-        begin match a.SPVar.storage with 
-        | Function.Value -> Var (infer_sp_var a)
-        | Function.Ref   -> RefClone (RefID.of_var a)
-        end
-      else
-        Var (infer_sp_var a)
-  | Function.KnownFuncVar a ->
-      KnownFuncVar (ValID.of_var a)
-  | Function.Let (a, e1, e2) ->
-      Let (infer_sp_var a,
-        identify_ref_clones ~is_binding_expr:true e1,
-        identify_ref_clones ~is_binding_expr e2)
-  | Function.ApplyKnown (f, f_args)   -> ApplyKnown (ValID.of_var f, List.map infer_sp_var f_args)
-  | Function.ApplyUnknown (f, f_args) -> ApplyUnknown (ValID.of_var f, List.map infer_sp_var f_args)
-  | Function.ArrayAlloc (size, init)  -> ArrayAlloc (ValID.of_var size, infer_sp_var init)
-  | Function.ArraySet (arr, index, v) -> ArraySet (RefID.of_var arr, ValID.of_var index, infer_sp_var v)
-  | Function.ArrayGet (arr, index)    -> ArrayGet (RefID.of_var arr, ValID.of_var index)
+  let rt_expr =
+    match expr with
+    | Function.Unit                -> Unit
+    | Function.Int x               -> Int x
+    | Function.BinaryOp (op, a, b) -> BinaryOp (op, ValID.of_var a, ValID.of_var b)
+    | Function.UnaryOp (op, a)     -> UnaryOp (op, ValID.of_var a)
+    | Function.Conditional (cond, a, b, e1, e2) ->
+        Conditional (cond, ValID.of_var a, ValID.of_var b,
+          identify_ref_clones ~is_binding_expr e1,
+          identify_ref_clones ~is_binding_expr e2)
+    | Function.Var a ->
+        if is_binding_expr then
+          begin match a.SPVar.storage with 
+          | Function.Value -> Var (infer_sp_var a)
+          | Function.Ref   -> RefClone (RefID.of_var a)
+          end
+        else
+          Var (infer_sp_var a)
+    | Function.KnownFuncVar a ->
+        KnownFuncVar (ValID.of_var a)
+    | Function.Let (a, e1, e2) ->
+        Let (infer_sp_var a,
+          identify_ref_clones ~is_binding_expr:true e1,
+          identify_ref_clones ~is_binding_expr e2)
+    | Function.ApplyKnown (f, f_args)   -> ApplyKnown (ValID.of_var f, List.map infer_sp_var f_args)
+    | Function.ApplyUnknown (f, f_args) -> ApplyUnknown (ValID.of_var f, List.map infer_sp_var f_args)
+    | Function.ArrayAlloc (size, init)  -> ArrayAlloc (ValID.of_var size, infer_sp_var init)
+    | Function.ArraySet (arr, index, v) -> ArraySet (RefID.of_var arr, ValID.of_var index, infer_sp_var v)
+    | Function.ArrayGet (arr, index)    -> ArrayGet (RefID.of_var arr, ValID.of_var index)
+  in
+  {id = free_expr_id (); expr = rt_expr}
 
 
 (* Identify cloning of reference types across the whole program. *)
@@ -275,7 +294,7 @@ module TOrd = struct
   (* Namespace collision... *)
   type top_t = t
   type t = top_t
-  let compare = Pervasives.compare
+  let compare e1 e2 = if e1.id < e2.id then -1 else if e1.id > e2.id then 1 else 0
 end
 module TMap = Map.Make(TOrd)
 
@@ -320,7 +339,7 @@ let rec make_control_flow_graph
   (state : cfg_state_t)
   (expr : t)
     : cfn_t TMap.t =
-  match expr with
+  match expr.expr with
   | Unit | Int _ | BinaryOp _ | UnaryOp _ | KnownFuncVar _ ->
       TMap.add expr {
           successor = state.scope_expr;
@@ -405,11 +424,11 @@ let rec insert_ref_release_aux
   (* FIXME: correct, but hacky *)
   let free_value_var () = infer_sp_var {SPVar.id = Normal.free_var(); SPVar.storage = Function.Value} in
   let free_ref_var ()   = infer_sp_var {SPVar.id = Normal.free_var(); SPVar.storage = Function.Ref} in
-  match expr with
+  match expr.expr with
   | Conditional (cond, a, b, e1, e2) ->
-      Conditional (cond, a, b,
+      {expr with expr = Conditional (cond, a, b,
         insert_ref_release_aux ~local_refs ~curr_binding liveness e1,
-        insert_ref_release_aux ~local_refs ~curr_binding liveness e2)
+        insert_ref_release_aux ~local_refs ~curr_binding liveness e2)}
   | Let (a, e1, e2) ->
       (* Note: most of the cleanup work is done below, but there's a corner case to catch here.
        * If [a] is a reference-type binding which is never used in [e2], then we release immediately. *)
@@ -420,11 +439,16 @@ let rec insert_ref_release_aux
         | Ref   r -> (RSet.add r local_refs, if RSet.mem r e2_live.LSolver.live_in then None else Some r)
       in
       let e2_with_release = insert_ref_release_aux ~local_refs:e2_local_refs ~curr_binding liveness e2 in
-      Let (a,
+      {expr with expr = Let (a,
         insert_ref_release_aux ~local_refs ~curr_binding:(Some a) liveness e1,
         match unused_binding_opt with
-        | None   -> e2_with_release
-        | Some r -> Let (free_value_var (), RefRelease r, e2_with_release))
+        | None ->
+            e2_with_release
+        | Some r -> {
+            id = free_expr_id ();
+            expr = Let (free_value_var (), {
+              id = free_expr_id ();
+              expr = RefRelease r}, e2_with_release)})}
   | Unit | Int _ | BinaryOp _ | UnaryOp _ | Var _ | KnownFuncVar _
   | ApplyKnown _ | ApplyUnknown _ | ArrayAlloc _
   | ArraySet _ | ArrayGet _ | RefClone _ | RefRelease _ ->
@@ -440,13 +464,15 @@ let rec insert_ref_release_aux
             match binding with
             | Value _ -> free_value_var ()
             | Ref _   -> free_ref_var ()
-          in
-          Let (new_bind_var, expr,
-            RSet.fold
-              (fun dead_ref acc ->
-                Let (free_value_var (), RefRelease dead_ref, acc))
-              dead_local_refs
-              (Var new_bind_var))
+          in {
+            id = free_expr_id ();
+            expr = Let (new_bind_var, expr,
+              RSet.fold
+                (fun dead_ref acc -> {
+                   id   = free_expr_id ();
+                   expr = Let (free_value_var (), {id = free_expr_id (); expr = RefRelease dead_ref}, acc)})
+                dead_local_refs
+                {id = free_expr_id (); expr = Var new_bind_var})}
       | None ->
           (* Not an intermediate expression *)
           expr
