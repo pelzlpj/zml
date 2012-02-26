@@ -20,6 +20,7 @@ let make_fun x =
 in
 let g = make_fun 5 in
 let h = g in
-let z = g 6 in
+let i = if true then g else h in
+let z = h 6 in
 ()
 

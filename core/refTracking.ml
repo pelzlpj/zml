@@ -300,8 +300,8 @@ module TMap = Map.Make(TOrd)
 
 
 type cfn_t = {
-  (* Successor node, if any *)
-  successor : t option;
+  (* Successor nodes, if any *)
+  successors : t list;
   (* Inputs for this node (reference types only) *)
   inputs : RSet.t;
   (* Outputs for this node (reference types only) *)
@@ -318,6 +318,9 @@ type cfg_state_t = {
 }
 
 
+let list_of_opt x = match x with Some y -> [y] | None -> []
+
+
 let cfn_of_vars state expr vars =
   let inputs = List.fold_left
     (fun acc x ->
@@ -328,7 +331,7 @@ let cfn_of_vars state expr vars =
     vars
   in
   TMap.add expr {
-    successor = state.scope_expr;
+    successors = list_of_opt state.scope_expr;
     inputs;
     outputs = match state.binding with Some x -> RSet.singleton x | None -> RSet.empty
   } state.map
@@ -342,17 +345,17 @@ let rec make_control_flow_graph
   match expr.expr with
   | Unit | Int _ | BinaryOp _ | UnaryOp _ | KnownFuncVar _ ->
       TMap.add expr {
-          successor = state.scope_expr;
-          inputs    = RSet.empty;
-          outputs   = match state.binding with Some x -> RSet.singleton x | None -> RSet.empty
+          successors = list_of_opt state.scope_expr;
+          inputs     = RSet.empty;
+          outputs    = match state.binding with Some x -> RSet.singleton x | None -> RSet.empty
         } state.map
   | Conditional (cond, a, b, e1, e2) ->
       let e1_map    = make_control_flow_graph state e1 in
       let e1_e2_map = make_control_flow_graph {state with map = e1_map} e2 in
       TMap.add expr {
-          successor = state.scope_expr;
-          inputs    = RSet.empty;
-          outputs   = match state.binding with Some x -> RSet.singleton x | None -> RSet.empty
+          successors = [e1; e2];
+          inputs     = RSet.empty;
+          outputs    = match state.binding with Some x -> RSet.singleton x | None -> RSet.empty
         } e1_e2_map
   | Let (a, e1, e2) ->
       (* The bound variable becomes the output of expression [e1]. *)
@@ -367,9 +370,9 @@ let rec make_control_flow_graph
        * to [e1].  This ensures that the inputs of [e1] and [e2] are both propagated up correctly
        * during liveness analysis. *)
       TMap.add expr {
-        successor = Some e1;
-        inputs    = RSet.empty;
-        outputs   = RSet.empty;
+        successors = [e1];
+        inputs     = RSet.empty;
+        outputs    = RSet.empty;
       } e1_e2_map
   | ApplyKnown (_, args) | ApplyUnknown (_, args) ->
       cfn_of_vars state expr args
@@ -383,9 +386,7 @@ let rec make_control_flow_graph
 
 (* Compute the identifiers for CFG nodes which may immediately follow node [expr]. *)
 let cfn_successors graph expr =
-  match (TMap.find expr graph).successor with
-  | None   -> []
-  | Some e -> [e]
+  (TMap.find expr graph).successors
 
 
 (* Compute the set of variables used as inputs for CFG node [expr].  (In this context, we only care
