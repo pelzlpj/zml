@@ -95,9 +95,12 @@ and expr_t =
   | Let of sp_var_t * t * t                     (* Let binding for a variable *)
   | ApplyKnown of ValID.t * (sp_var_t list)     (* Application of "known" function *)
   | ApplyUnknown of ValID.t * (sp_var_t list)   (* Application of an "unknown" function (computed address) *)
-  | ArrayAlloc of ValID.t * sp_var_t            (* Construct a new array (size, init) *)
+  | ArrayAlloc of ValID.t                       (* Construct a new array (size) *)
+  | ArrayInitOne of RefID.t * ValID.t * sp_var_t(* Store a ref or value in an array, setting the
+                                                    storage type to match (arr, index, val) *)
   | ArraySet of RefID.t * ValID.t * sp_var_t    (* Store a ref or value in an array (arr, index, ref) *)
-  | ArrayGet of RefID.t * ValID.t               (* Get a ref or value from an array (arr, index) *)
+  | ArrayGetVal of RefID.t * ValID.t            (* Get a value from an array (arr, index) *)
+  | ArrayGetRef of RefID.t * ValID.t            (* Get a reference from an array (arr, index) *)
   | RefClone of RefID.t                         (* Create new references which points to same object *)
   | RefRelease of RefID.t                       (* Release a reference *)
 
@@ -182,12 +185,16 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : stri
       sprintf "apply(%s %s)" (ValID.to_string f) (String.concat " " (List.map string_of_sp_var args))
   | ApplyUnknown (f, args) ->
       sprintf "apply_unk(%s %s)" (ValID.to_string f) (String.concat " " (List.map string_of_sp_var args))
-  | ArrayAlloc (a, b) ->
-      sprintf "array_alloc(%s, %s)" (ValID.to_string a) (string_of_sp_var b)
+  | ArrayAlloc a ->
+      sprintf "array_alloc(%s)" (ValID.to_string a)
+  | ArrayInitOne (a, b, c) ->
+      sprintf "array_init_one(%s, %s, %s)" (RefID.to_string a) (ValID.to_string b) (string_of_sp_var c)
   | ArraySet (a, b, c) ->
       sprintf "array_set(%s, %s, %s)" (RefID.to_string a) (ValID.to_string b) (string_of_sp_var c)
-  | ArrayGet (a, b) ->
-      sprintf "array_get(%s, %s)" (RefID.to_string a) (ValID.to_string b)
+  | ArrayGetVal (a, b) ->
+      sprintf "array_get_val(%s, %s)" (RefID.to_string a) (ValID.to_string b)
+  | ArrayGetRef (a, b) ->
+      sprintf "array_get_ref(%s, %s)" (RefID.to_string a) (ValID.to_string b)
   | RefClone r ->
       sprintf "clone(%s)" (RefID.to_string r)
   | RefRelease r ->
@@ -261,9 +268,11 @@ let rec identify_ref_clones ?(is_binding_expr=false) (expr : Function.t) : t =
           identify_ref_clones ~is_binding_expr e2)
     | Function.ApplyKnown (f, f_args)   -> ApplyKnown (ValID.of_var f, List.map infer_sp_var f_args)
     | Function.ApplyUnknown (f, f_args) -> ApplyUnknown (ValID.of_var f, List.map infer_sp_var f_args)
-    | Function.ArrayAlloc (size, init)  -> ArrayAlloc (ValID.of_var size, infer_sp_var init)
-    | Function.ArraySet (arr, index, v) -> ArraySet (RefID.of_var arr, ValID.of_var index, infer_sp_var v)
-    | Function.ArrayGet (arr, index)    -> ArrayGet (RefID.of_var arr, ValID.of_var index)
+    | Function.ArrayAlloc size          -> ArrayAlloc (ValID.of_var size)
+    | Function.ArrayInitOne (arr, i, v) -> ArrayInitOne (RefID.of_var arr, ValID.of_var i, infer_sp_var v)
+    | Function.ArraySet (arr, i, v)     -> ArraySet (RefID.of_var arr, ValID.of_var i, infer_sp_var v)
+    | Function.ArrayGetVal (arr, i)     -> ArrayGetVal (RefID.of_var arr, ValID.of_var i)
+    | Function.ArrayGetRef (arr, i)     -> ArrayGetRef (RefID.of_var arr, ValID.of_var i)
   in
   {id = free_expr_id (); expr = rt_expr}
 
@@ -346,7 +355,7 @@ let rec make_control_flow_graph
   (expr : t)
     : cfn_t TMap.t =
   match expr.expr with
-  | Unit | Int _ | BinaryOp _ | UnaryOp _ | KnownFuncVar _ ->
+  | Unit | Int _ | BinaryOp _ | UnaryOp _ | KnownFuncVar _ | ArrayAlloc _->
       TMap.add expr {
           successors = list_of_opt state.scope_expr;
           inputs     = RSet.empty;
@@ -379,11 +388,11 @@ let rec make_control_flow_graph
       } e1_e2_map
   | ApplyKnown (_, args) | ApplyUnknown (_, args) ->
       cfn_of_vars state expr args
-  | ArrayAlloc (_, x) | Var x ->
+  | Var x ->
       cfn_of_vars state expr [x]
-  | ArraySet (arr, _, x) ->
+  | ArraySet (arr, _, x) | ArrayInitOne (arr, _, x) ->
       cfn_of_vars state expr ((Ref arr) :: [x])
-  | ArrayGet (r, _) | RefClone r | RefRelease r ->
+  | ArrayGetVal (r, _) | ArrayGetRef (r, _) | RefClone r | RefRelease r ->
       cfn_of_vars state expr [Ref r]
 
 
@@ -465,8 +474,8 @@ let rec insert_ref_release_aux
         | None   -> e2_with_release
         | Some r -> insert_release_let r e2_with_release)}
   | Unit | Int _ | BinaryOp _ | UnaryOp _ | Var _ | KnownFuncVar _
-  | ApplyKnown _ | ApplyUnknown _ | ArrayAlloc _
-  | ArraySet _ | ArrayGet _ | RefClone _ | RefRelease _ ->
+  | ApplyKnown _ | ApplyUnknown _ | ArrayAlloc _ | ArrayInitOne _
+  | ArraySet _ | ArrayGetVal _ | ArrayGetRef _ | RefClone _ | RefRelease _ ->
       begin match curr_binding with
       | Some binding ->
         let expr_live = LSolver.IdMap.find expr liveness in

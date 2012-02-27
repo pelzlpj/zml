@@ -24,9 +24,12 @@ type t =
   | Let of sp_var_t * t * t                     (* Let binding for a variable *)
   | ApplyKnown of ValID.t * (sp_var_t list)     (* Application of "known" function *)
   | ApplyUnknown of ValID.t * (sp_var_t list)   (* Application of an "unknown" function (computed address) *)
-  | ArrayAlloc of ValID.t * sp_var_t            (* Construct a new array (size, init) *)
+  | ArrayAlloc of ValID.t                       (* Construct a new array (size) *)
+  | ArrayInitOne of RefID.t * ValID.t * sp_var_t(* Store a ref or value in an array, setting the
+                                                    storage type to match (arr, index, val) *)
   | ArraySet of RefID.t * ValID.t * sp_var_t    (* Store a ref or value in an array (arr, index, ref) *)
-  | ArrayGet of RefID.t * ValID.t               (* Get a ref or value from an array (arr, index) *)
+  | ArrayGetVal of RefID.t * ValID.t            (* Get a value from an array (arr, index) *)
+  | ArrayGetRef of RefID.t * ValID.t            (* Get a reference from an array (arr, index) *)
   | RefClone of RefID.t                         (* Create new references which points to same object *)
   | RefRelease of RefID.t                       (* Release a reference *)
 
@@ -66,9 +69,11 @@ let rec drop_ids (id_expr : RefTracking.t) : t =
   | RefTracking.Let (a, e1, e2)                  -> Let (a, drop_ids e1, drop_ids e2)
   | RefTracking.ApplyKnown (f, args)             -> ApplyKnown (f, args)
   | RefTracking.ApplyUnknown (f, args)           -> ApplyUnknown (f, args)
-  | RefTracking.ArrayAlloc (size, init)          -> ArrayAlloc (size, init)
+  | RefTracking.ArrayAlloc size                  -> ArrayAlloc size
+  | RefTracking.ArrayInitOne (arr, index, v)     -> ArrayInitOne (arr, index, v)
   | RefTracking.ArraySet (arr, index, v)         -> ArraySet (arr, index, v)
-  | RefTracking.ArrayGet (arr, index)            -> ArrayGet (arr, index)
+  | RefTracking.ArrayGetVal (arr, index)         -> ArrayGetVal (arr, index)
+  | RefTracking.ArrayGetRef (arr, index)         -> ArrayGetRef (arr, index)
   | RefTracking.RefClone r                       -> RefClone r
   | RefTracking.RefRelease r                     -> RefRelease r
 

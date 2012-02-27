@@ -232,30 +232,51 @@ let rec compile_virtual_aux
       let g_reg    = RVMap.find (lift_value g) state.reg_of_var in
       let arg_regs = List.map (fun v -> Reg (RVMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Reg g_reg, arg_regs, result_reg)])
-  | IR.ArrayAlloc (size, init) ->
-      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_alloc"), [
-        Reg (RVMap.find (lift_value size) state.reg_of_var);
-        Reg (RVMap.find init state.reg_of_var)],
-        result_reg)])
+  | IR.ArrayAlloc size ->
+      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_alloc"),
+        [Reg (RVMap.find (lift_value size) state.reg_of_var)],
+      result_reg)])
+  | IR.ArrayInitOne (arr, index, v) ->
+      let is_ref =
+        match v with
+        | RefTracking.Value _ -> Const (ConstNum 0)
+        | RefTracking.Ref _   -> Const (ConstNum 1)
+      in
+      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_init_one"), [
+        Reg (RVMap.find (lift_ref arr) state.reg_of_var);
+        Reg (RVMap.find (lift_value index) state.reg_of_var);
+        Reg (RVMap.find v state.reg_of_var);
+        is_ref],
+      result_reg)])
   | IR.ArraySet (arr, index, v) ->
-      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_set"), [
+      let routine =
+        match v with
+        | RefTracking.Value _ -> "zml_array_set_value"
+        | RefTracking.Ref _   -> "zml_array_set_ref"
+      in
+      (state, [CALL_VS2 (Const (AsmRoutine routine), [
         Reg (RVMap.find (lift_ref arr) state.reg_of_var);
         Reg (RVMap.find (lift_value index) state.reg_of_var);
         Reg (RVMap.find v state.reg_of_var)],
-        result_reg)])
-  | IR.ArrayGet (arr, index) ->
-      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_get"), [
+      result_reg)])
+  | IR.ArrayGetVal (arr, index) ->
+      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_get_value"), [
         Reg (RVMap.find (lift_ref arr) state.reg_of_var);
         Reg (RVMap.find (lift_value index) state.reg_of_var)],
-        result_reg)])
+      result_reg)])
+  | IR.ArrayGetRef (arr, index) ->
+      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_get_ref"), [
+        Reg (RVMap.find (lift_ref arr) state.reg_of_var);
+        Reg (RVMap.find (lift_value index) state.reg_of_var)],
+      result_reg)])
   | IR.RefClone r ->
       (state, [CALL_VS2 (Const (AsmRoutine "zml_ref_clone"),
         [Reg (RVMap.find (lift_ref r) state.reg_of_var)],
-        result_reg)])
+      result_reg)])
   | IR.RefRelease r ->
       (state, [CALL_VS2 (Const (AsmRoutine "zml_ref_release"),
         [Reg (RVMap.find (lift_ref r) state.reg_of_var)],
-        result_reg)])
+      result_reg)])
 
 
 (* Compile a binary integer operation. *)
@@ -717,29 +738,26 @@ let rec subst_registers (acc : ZReg.t t list) (subst : ZReg.t VRegMap.t) (asm : 
 
 
 
-let inject_loads ~spilled_reg_offsets ~reg_alloc_state ~reg ~root_ref =
+let inject_load ~spilled_reg_offsets ~reg_alloc_state ~reg ~root_ref =
   if VRegMap.mem reg spilled_reg_offsets then
     let (reg_alloc_state, new_reg) = VRegState.next reg_alloc_state in
     let load_asm = [
-      CALL_VS2 (Const (AsmRoutine "zml_deref_root"), [Reg root_ref], new_reg);
       CALL_VS2 (Const (AsmRoutine "zml_array_get"),
-        [Reg new_reg; Const (ConstNum (VRegMap.find reg spilled_reg_offsets))], new_reg)
+        [Reg root_ref; Const (ConstNum (VRegMap.find reg spilled_reg_offsets))], new_reg)
     ] in
     (reg_alloc_state, Reg new_reg, load_asm)
   else
     (reg_alloc_state, Reg reg, [])
 
 
-let inject_stores ~spilled_reg_offsets ~reg_alloc_state ~reg ~root_ref =
+let inject_store ~spilled_reg_offsets ~reg_alloc_state ~reg ~root_ref =
   if VRegMap.mem reg spilled_reg_offsets then
     (* Leave a register available for the destructive write which
      * precedes this injected assembly *)
     let (reg_alloc_state, written_reg) = VRegState.next reg_alloc_state in
-    let (reg_alloc_state, deref_reg)   = VRegState.next reg_alloc_state in
     let store_asm = [
-      CALL_VS2 (Const (AsmRoutine "zml_deref_root"), [Reg root_ref], deref_reg);
-      CALL_VS2 (Const (AsmRoutine "zml_array_set"),
-        [Reg deref_reg; Const (ConstNum (VRegMap.find reg spilled_reg_offsets));
+      CALL_VS2 (Const (AsmRoutine "zml_array_set_value"),
+        [Reg root_ref; Const (ConstNum (VRegMap.find reg spilled_reg_offsets));
           Reg written_reg], written_reg)
     ] in
     (reg_alloc_state, written_reg, store_asm)
@@ -765,7 +783,7 @@ let spill_instruction
       match op with
       | Reg reg ->
           let (reg_alloc_state, op, injected) =
-            inject_loads ~spilled_reg_offsets ~reg_alloc_state ~reg ~root_ref
+            inject_load ~spilled_reg_offsets ~reg_alloc_state ~reg ~root_ref
           in
           (reg_alloc_state, ops_acc @ [op], injected_asm_acc @ injected)
       | Const _ ->
@@ -779,7 +797,7 @@ let spill_instruction
         (reg_alloc_state, res_opt, [])
     | Some res ->
         let (reg_alloc_state, res, inject) =
-          inject_stores ~spilled_reg_offsets ~reg_alloc_state ~reg:res ~root_ref
+          inject_store ~spilled_reg_offsets ~reg_alloc_state ~reg:res ~root_ref
         in
         (reg_alloc_state, Some res, inject)
   in
@@ -817,11 +835,9 @@ let spill_to_heap
     spill_regs
     (0, VRegMap.empty)
   in
-  let header =  [
-    CALL_VS2 (Const (AsmRoutine "zml_alloc_value_array"),
-      [Const (ConstNum (VRegSet.cardinal spill_regs)); Const (ConstNum 0)], root_ref);
-    CALL_VS2 (Const (AsmRoutine "zml_register_root"),
-      [Reg root_ref], root_ref)
+  let header = [
+    CALL_VS2 (Const (AsmRoutine "zml_array_alloc"),
+      [Const (ConstNum (VRegSet.cardinal spill_regs))], root_ref)
   ] in
   (* Insert loads and stores whenever the spilled registers are accessed. *)
   let (reg_alloc_state, modified_asm) = List.fold_left
@@ -897,15 +913,15 @@ let spill_to_heap
           | Const _ ->
               (reg_alloc_state,
                 RET op ::
-                CALL_VS2 (Const (AsmRoutine "zml_unregister_root"), [Reg root_ref], root_ref) ::
+                CALL_VS2 (Const (AsmRoutine "zml_ref_release"), [Reg root_ref], root_ref) ::
                 asm_acc)
           | Reg r ->
               let (reg_alloc_state, op, load_asm) =
-                inject_loads ~spilled_reg_offsets:spilled_reg_offsets ~reg_alloc_state ~reg:r ~root_ref
+                inject_load ~spilled_reg_offsets:spilled_reg_offsets ~reg_alloc_state ~reg:r ~root_ref
               in
               (reg_alloc_state,
                 RET op ::
-                CALL_VS2 (Const (AsmRoutine "zml_unregister_root"), [Reg root_ref], root_ref) ::
+                CALL_VS2 (Const (AsmRoutine "zml_ref_release"), [Reg root_ref], root_ref) ::
                 (List.rev_append load_asm asm_acc))
           end
       | (JUMP label as inst) | (Label label as inst) ->

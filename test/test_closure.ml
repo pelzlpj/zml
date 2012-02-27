@@ -19,8 +19,8 @@ let make_fun x =
   f
 in
 let g = make_fun 5 in
-let h = g in
-let i = if true then g else h in
-let z = h 6 in
+let z = g 9 in
+let z = zml_print_dec z in
+let z = zml_print_newline () in
 ()
 

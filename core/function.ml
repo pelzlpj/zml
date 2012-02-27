@@ -54,9 +54,12 @@ type t =
   | ApplyKnown of var_t * (var_t list)              (* Application of "known" function *)
   | ApplyUnknown of var_t * (var_t list)            (* Application of an "unknown" function
                                                           (i.e. call to computed address) *)
-  | ArrayAlloc of var_t * var_t                     (* Construct a new array (size, init) *)
-  | ArraySet of var_t * var_t * var_t               (* Store a ref or value in an array (arr, index, ref) *)
-  | ArrayGet of var_t * var_t                       (* Get a ref or value from an array (arr, index) *)
+  | ArrayAlloc of var_t                             (* Construct a new array (size) *)
+  | ArrayInitOne of var_t * var_t * var_t           (* Store a ref or value in an array, setting the
+                                                        storage type to match (arr, index, val) *)
+  | ArraySet of var_t * var_t * var_t               (* Store a ref or value in an array (arr, index, val) *)
+  | ArrayGetVal of var_t * var_t                    (* Get a value from an array (arr, index) *)
+  | ArrayGetRef of var_t * var_t                    (* Get a reference from an array (arr, index) *)
 
 
 type function_def_t =
@@ -84,17 +87,24 @@ type program_t = {
 let value_var (v : VarID.t) = {SPVar.id = v.VarID.id; SPVar.storage = Value}
 let ref_var   (v : VarID.t) = {SPVar.id = v.VarID.id; SPVar.storage = Ref}
 
-(* Use a variable's type information to infer its storage policy *)
-let infer_storage (v : VarID.t) =
-  match v.VarID.tp with
+
+(* Get the storage policy associated with a type.  (For function types, the resulting
+ * storage policy is always Ref. *)
+let storage_of_type tp =
+  match tp with
   | Type.Unit | Type.Bool _ | Type.Int _ ->
-      value_var v
+      Value
   | Type.Arrow _ ->
       (* Any first-class treatment of a function results in a closure reference. *)
-      ref_var v
+      Ref
   | Type.Var _ ->
       (* Polymorphic type... *)
       assert false
+
+
+(* Use a variable's type information to infer its storage policy *)
+let infer_storage (v : VarID.t) =
+  {SPVar.id = v.VarID.id; SPVar.storage = storage_of_type v.VarID.tp}
 
 
 (* Formatting rules:
@@ -153,12 +163,16 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : stri
       sprintf "apply(%s %s)" (SPVar.to_string f) (String.concat " " (List.map SPVar.to_string args))
   | ApplyUnknown (f, args) ->
       sprintf "apply_unk(%s %s)" (SPVar.to_string f) (String.concat " " (List.map SPVar.to_string args))
-  | ArrayAlloc (a, b) ->
-      sprintf "array_alloc(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
+  | ArrayAlloc a ->
+      sprintf "array_alloc(%s)" (SPVar.to_string a)
+  | ArrayInitOne (a, b, c) ->
+      sprintf "array_init_one(%s, %s, %s)" (SPVar.to_string a) (SPVar.to_string b) (SPVar.to_string c)
   | ArraySet (a, b, c) ->
       sprintf "array_set(%s, %s, %s)" (SPVar.to_string a) (SPVar.to_string b) (SPVar.to_string c)
-  | ArrayGet (a, b) ->
-      sprintf "array_get(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
+  | ArrayGetVal (a, b) ->
+      sprintf "array_get_val(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
+  | ArrayGetRef (a, b) ->
+      sprintf "array_get_ref(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
 
 
 
@@ -250,52 +264,32 @@ let make_closure_def
   (scope_expr : Normal.t)             (* Expression in which the closure will be in scope *)
   (extract_fun : Normal.t -> t)       (* Method for extracting functions from a subexpression *)
     : t =
-  (* Prefix the expression with all the array_set operations necessary to init the closure *)
+  (* Prefix the expression with all the array_init operations necessary to init the closure *)
   let (_, expr_with_array_init) = VSet.fold
     (fun free_var (ofs, exp) ->
       let array_set_expr =
-        match free_var.VarID.tp with
-        | Type.Unit | Type.Bool _ | Type.Int _ ->
-            (* The closure array stores reference types; value types must be boxed
-             * so they can be stored in the reference array. *)
-            let size_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-            let box_id  = {SPVar.id = Normal.free_var (); SPVar.storage = Ref} in
-            let ofs_id  = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-            Let (size_id, Int 1,
-              Let (box_id, ArrayAlloc (size_id, value_var free_var),
-                Let (ofs_id, Int ofs,
-                  Let ({SPVar.id = Normal.free_var (); SPVar.storage = Value},
-                    ArraySet (closure_id, ofs_id, box_id),
-                    exp))))
-        | Type.Arrow _ ->
-            (* Reference types are stored directly in the closure array.  (Note that a
-             * function which appears in this context (as a free variable) is an unknown
-             * function and is therefore of reference type. *)
-            let ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-            Let (ofs_id, Int ofs,
-              Let ({SPVar.id = Normal.free_var (); SPVar.storage = Value},
-                ArraySet (closure_id, ofs_id, ref_var free_var),
-                exp))
-        | Type.Var _ ->
-            (* Polymorphic free variable? *)
-            assert false
+        let ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+        Let (ofs_id, Int ofs,
+          Let ({SPVar.id = Normal.free_var (); SPVar.storage = Value},
+            ArrayInitOne (closure_id, ofs_id, infer_storage free_var),
+            exp))
       in
       (ofs + 1, array_set_expr))
     free_vars
     (1, extract_fun scope_expr)
   in
   (* Now prepend the closure array allocation.  Note that array location zero holds the closure
-   * function itself (boxed), so that the entire closure can be passed around as a first-class
+   * known-function itself, so that the entire closure can be passed around as a first-class
    * value. *)
-  let box_size_id      = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-  let known_func_id    = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-  let closure_func_ref = {SPVar.id = Normal.free_var (); SPVar.storage = Ref} in
-  let closure_size_id  = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-  Let (box_size_id, Int 1,
-    Let (known_func_id, KnownFuncVar (value_var f_id),
-      Let (closure_func_ref, ArrayAlloc (box_size_id, known_func_id),
-        Let (closure_size_id, Int (1 + (VSet.cardinal free_vars)),
-          Let (closure_id, ArrayAlloc (closure_size_id, closure_func_ref),
+  let closure_size_id   = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+  let known_func_ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+  let known_func_id     = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+  Let (known_func_id, KnownFuncVar (value_var f_id),
+    Let (closure_size_id, Int (1 + (VSet.cardinal free_vars)),
+      Let (closure_id, ArrayAlloc closure_size_id,
+        Let (known_func_ofs_id, Int 0,
+          Let ({SPVar.id = Normal.free_var (); SPVar.storage = Value},
+            ArrayInitOne (closure_id, known_func_ofs_id, known_func_id),
             expr_with_array_init)))))
 
 
@@ -313,28 +307,13 @@ let make_closure_fun_body
     VSet.fold
       (fun free_var (ofs, exp) ->
         let array_get_expr =
-          match free_var.VarID.tp with
-          | Type.Unit | Type.Bool _ | Type.Int _ ->
-              (* Value types are boxed, so we have to do a double-dereference *)
-              let closure_ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-              let box_id         = {SPVar.id = Normal.free_var (); SPVar.storage = Ref} in
-              let box_ofs_id     = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-              Let (closure_ofs_id, Int ofs,
-                Let (box_id, ArrayGet (closure_id, closure_ofs_id),
-                  Let (box_ofs_id, Int 0,
-                    Let (value_var free_var, ArrayGet (box_id, box_ofs_id),
-                      exp))))
-          | Type.Arrow _ ->
-              (* Reference types are stored directly in the closure array.  (Note that a
-               * function which appears in this context (as a free variable) is an unknown
-               * function and is therefore of reference type. *)
-              let ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-              Let (ofs_id, Int ofs,
-                Let (ref_var free_var, ArrayGet (closure_id, ofs_id),
-                  exp))
-          | Type.Var _ ->
-              (* Polymorphic free variable? *)
-              assert false
+          let ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+          Let (ofs_id, Int ofs,
+            match storage_of_type free_var.VarID.tp with
+            | Value ->
+                Let (value_var free_var, ArrayGetVal (closure_id, ofs_id), exp)
+            | Ref ->
+                Let (ref_var free_var, ArrayGetRef (closure_id, ofs_id), exp))
         in
         (ofs + 1, array_get_expr))
       free_vars
@@ -346,14 +325,10 @@ let make_closure_fun_body
 (* Insert code to invoke a closure. *)
 let make_closure_application closure_id args =
   let closure_ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-  let box_id         = {SPVar.id = Normal.free_var (); SPVar.storage = Ref} in
-  let box_ofs_id     = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
   let func_id        = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
   Let (closure_ofs_id, Int 0,
-    Let (box_id, ArrayGet (closure_id, closure_ofs_id),
-      Let (box_ofs_id, Int 0,
-        Let (func_id, ArrayGet (box_id, box_ofs_id),
-          ApplyUnknown (func_id, closure_id :: args)))))
+    Let (func_id, ArrayGetVal (closure_id, closure_ofs_id),
+      ApplyUnknown (func_id, closure_id :: args)))
 
 
 (* Determines whether or not the function with the given [f_id] is ever treated as a first-class

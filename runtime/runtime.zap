@@ -1052,6 +1052,18 @@ out_of_memory:
    ret_popped
 
 
+.FUNCT zml_ref_clone, root_ref
+   ; Given a root reference to a heap object, construct a new root reference to the same
+   ; heap object.
+   ;
+   ; param root_ref: root reference to a heap object
+   ;
+   ; Returns: new root reference
+   loadw __heap_start root_ref -> sp
+   call_2s __zml_ref_register sp -> sp
+   ret_popped
+
+
 .FUNCT __zml_mark_roots, i, roots_table_boundary, heap_ref
    ; Recursively mark all heap memory which is reachable through entries in
    ; the table of roots.

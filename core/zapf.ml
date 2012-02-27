@@ -42,14 +42,14 @@ let rec string_of_asm
         | MOD (a, b, r) ->
             sprintf "  mod %s %s -> %s" (string_of_operand a) (string_of_operand b) (ZReg.string_of r)
         | JE (a, b, lb) ->
-            sprintf "  je %s %s ?label%d" (string_of_operand a) (string_of_operand b) lb
+            sprintf "  jeq %s %s ?label%d" (string_of_operand a) (string_of_operand b) lb
         | JL (a, b, lb) ->
             sprintf "  jl %s %s ?label%d" (string_of_operand a) (string_of_operand b) lb
         | JUMP lb ->
             (* workaround for zapf-0.3 parser bug: need to omit question mark before the label. *)
             sprintf "  jump label%d" lb
         | LOAD (r1, r2) ->
-            sprintf "  load %s -> %s" (ZReg.string_of r1) (ZReg.string_of r2)
+            sprintf "  load '%s -> %s" (ZReg.string_of r1) (ZReg.string_of r2)
         | STORE (r, a) ->
             sprintf "  store '%s %s" (ZReg.string_of r) (string_of_operand a)
         | CALL_VS2 (f, reg_args, r) ->
