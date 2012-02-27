@@ -23,16 +23,8 @@ LIST_NULL=65535
 
 MARK_BIT=16384          ; Second-highest bit is the mark bit
 NOT_MARK_BIT=49151
-TAG_MASK=15360          ; Four bits for the tag
-HEADER_DATA_MASK=1023   ; Bottom ten bits hold type-specific data
-
-
-; The following are pre-shifted by 10 bits for ease of comparison
-VALUEARRAY_TAG=0     ; Header bits for a value array cell
-REFARRAY_TAG=1024    ; Header bits for a reference array cell
-VALUELIST_TAG=2048   ; Header bits for a value list cell
-REFLIST_TAG=3072     ; Header bits for a reference list cell
-
+TAG_MASK=8192           ; One bit reserved for the type tag
+ARRAY_TAG=8192          ; Header bit for an array cell
 
 
 ; Insert zeros for the empty space until end of dynamic area
@@ -45,57 +37,33 @@ __begin_high::
 __zml_main::
    call_1n __zml_init_heap
    call_1n zml_main  ; jumping to user code entry point
+   ; call_1n __test_main
    quit
 
 
-.FUNCT __main, ref1, ref2, ref3, root1, root2, root3
-   call_vs zml_alloc_value_array 5 15  -> ref1
-   call_vs zml_alloc_value_array 4 10  -> ref2
-   call_2s zml_register_root ref2 -> root2
-   call_vs zml_alloc_value_array 1 8  -> ref1
-   call_2s zml_register_root ref1 -> root1
+.FUNCT __test_main, ref1, ref2, ref3, root1, root2, root3
+   call_vs zml_array_create 0 5 0 -> ref3
+   call_vn zml_ref_release ref3
 
-   print "registered root: "
-   print_num root1
-   new_line
+   call_vs zml_array_create 20 65535 0 -> ref2
 
-   loadw __heap_start root1 -> sp
-   print "heap_ptr: "
-   print_num sp
-   new_line
+   call_vs zml_array_create 1 6 0 -> ref3
+   call_vs2 zml_array_init_one ref2 2 ref3 1
+   call_vn zml_ref_release ref3
+
+   call_vs zml_array_create 1 7 0 -> ref3
+   call_vs2 zml_array_init_one ref2 19 ref3 1
+   call_vn zml_ref_release ref3
 
    call_1n __zml_mark_roots
-   call_1n __zml_sweep
-   call_1n __zml_compact
-
-   loadw __heap_start root1 -> ref1
-   print "heap pointer was relocated to "
-   print_num ref1
-   new_line
-
-   call_vs zml_array_get ref1 0 -> sp
-   print "heap array holds value "
-   print_num sp
-   new_line
-
    save -> sp
 
-   call_2n zml_unregister_root root2
-   call_1n __zml_mark_roots
    call_1n __zml_sweep
-   call_1n __zml_compact
-
-   loadw __heap_start root1 -> ref1
-   print "heap pointer was relocated to "
-   print_num ref1
-   new_line
-
-   call_vs zml_array_get ref1 0 -> sp
-   print "heap array holds value "
-   print_num sp
-   new_line
-
    save -> sp
+
+   call_1n __zml_compact
+   save -> sp
+
    rtrue
    
 
@@ -113,90 +81,229 @@ __zml_main::
    rtrue
 
 
-.FUNCT zml_alloc_value_array, size, init_val
-   ; Allocate a new array of the given size, which shall hold values (not pointers).
-   ; The initial value is assigned to all elements.
-   ;
-   ; param size: length of the array >= 0, in words
-   ; param init_val: initial value to store in all locations
-   ;
-   ; Returns: word index where array begins (heap-relative)
-   call_vs __zml_alloc_array size init_val VALUEARRAY_TAG -> sp
-   ret_popped
-
-
-.FUNCT zml_alloc_ref_array, size, init_val
-   ; Allocate a new array of the given size, which shall hold pointers (not values).
-   ; The initial pointer value is assigned to all elements.
-   ;
-   ; param size: length of the array >= 0, in words
-   ; param init_val: initial value to store in all locations
-   ;
-   ; Returns: word index where array begins (heap-relative)
-   call_vs __zml_alloc_array size init_val REFARRAY_TAG -> sp
-   ret_popped
-
-
+ALL_ONES=65535
 NOT_ONE=65534           ; bitwise not of 1
 
-.FUNCT __zml_alloc_array, size, init_val, header_word, curr_word
-   ; Allocate a new array of the given size, applying the specified array header
-   ; to the reference cell. The initial value is assigned to all elements.
+
+.FUNCT __zml_array_init_refmap, refmap_addr, refmap_size, is_ref, refmap_val
+   ; Initialize the refmap for an array.
    ;
-   ; param size: length of the array >= 0, in words
-   ; param init_val: initial value to store in all locations
-   ; param header_word: word to be placed in the array header
-   ; local curr_word: current word being written
-   ;
-   ; Returns: word index where array begins (heap-relative)
-   jl size HEADER_DATA_MASK ?small_array           ; jump if size is small enough for compact representation
+   ; param refmap_addr: word address where refmap begins (heap-relative)
+   ; param refmap_size: number of words in the refmap
+   ; param is_ref: nonzero if the array shall hold references, zero if it shall hold values
+   ; local refmap_val: value to be stored in each refmap location
+   jz is_ref ?value_refmap
+   store 'refmap_val ALL_ONES
+   jump init_refmap
+value_refmap:
+   store 'refmap_val 0
 
-large_array:
-   add size 3 -> sp
-   and sp NOT_ONE -> sp                            ; even size ==> sp = size+2; odd size ==> sp = size+3
-   call_2s __zml_alloc_block sp -> curr_word
-   push curr_word                                  ; leave a copy of array reference on the stack
-   or header_word HEADER_DATA_MASK -> header_word  ; header now identifies this as large array
-   storew __heap_start curr_word header_word
-   inc 'curr_word
-   storew __heap_start curr_word size
-   jump fill_words
-
-small_array:
-   add size 2 -> sp
-   and sp NOT_ONE -> sp                            ; even size ==> sp = size+2; odd size ==> sp = size+1
-   call_2s __zml_alloc_block sp -> curr_word
-   push curr_word                                  ; leave a copy of array reference on the stack
-   or header_word size -> header_word
-   storew __heap_start curr_word header_word
-
-fill_words:
-   jz size ?done                                   ; jump if size is zero
-   inc 'curr_word
-   storew __heap_start curr_word init_val
-   dec 'size
-   jump fill_words
+init_refmap:
+   jz refmap_size ?done
+   storew __heap_start refmap_addr refmap_val
+   inc 'refmap_addr
+   dec 'refmap_size
+   jump init_refmap
 
 done:
+   rtrue
+
+
+.FUNCT zml_array_alloc, size, refmap_size, block
+   ; Allocate a new array of the given size.  Upon completion, the array contents are unspecified;
+   ; however, each element stored in the array shall be value-typed.
+   ;
+   ; This function is intended for use with zml_array_init_one, to initialize ML record types
+   ; with mixed value and reference storage.  For ML arrays, zml_array_create will be more
+   ; efficient.
+   ;
+   ; param size: length of the array >= 0, in words
+   ; local refmap_size: count of words reserved for the value/reference disambiguation bitmap
+   ; local block: holds the allocated block reference
+   ;
+   ; Returns: root reference for the newly-allocated array
+   call_2s __zml_array_refmap_size size -> refmap_size
+   call_vs __zml_array_alloc_storage size refmap_size -> block
+
+   ; set up the header word
+   storew __heap_start block ARRAY_TAG
+
+   ; store the array size
+   add block 1 -> sp
+   storew __heap_start sp size
+
+   ; init the refmap for value storage
+   add block 2 -> sp
+   add size sp -> sp                                  ; sp holds start of refmap
+   call_vn __zml_array_init_refmap sp refmap_size 0
+
+   call_2s __zml_ref_register block -> sp
    ret_popped
 
 
-.FUNCT zml_array_size, arr, header_size
+.FUNCT zml_array_init_one, arr, index, val, is_ref
+   ; Set the element stored in the array at the given index.  The element will be stored
+   ; as a value type if [is_ref] is zero, and as a reference type if [is_ref] is nonzero.
+   ;
+   ; This function is intended for use with zml_array_alloc, to initialize ML record types
+   ; with mixed value and reference storage.  For ML arrays, zml_array_create will be more
+   ; efficient.
+   ;
+   ; param arr: root reference which identifies an array
+   ; param index: array value to set: 0 <= index < array size
+   ; param val: integer value or root reference to be stored (depending on [is_ref] setting)
+   ; param is_ref: nonzero if [val] is of reference type, zero if value type
+   call_2s __zml_deref_root arr -> arr
+   call_vn __zml_array_set_refmap arr index is_ref
+   call_vs __zml_array_get_element_address arr index -> sp
+
+   jz is_ref ?store_value
+   ; reference type
+   call_2s __zml_deref_root val -> val
+store_value:
+   storew __heap_start sp val
+   rtrue
+
+
+.FUNCT zml_array_create, size, init, is_ref, refmap_size, block
+   ; Allocate an array and initialize all its elements to [init].  If [is_ref] is
+   ; nonzero, then [init] shall be treated as a reference type; if [is_ref] is zero,
+   ; then [init] shall be treated as a value type.
+   ;
+   ; For performance reasons, this is the preferred method to use for initialization of
+   ; ML arrays.
+   ;
+   ; param size: size of the array to be created
+   ; param init: integer value or root reference to be stored (depending on [is_ref] setting)
+   ; param is_ref: nonzero if [init] is of reference type, zero if value type
+   ; local refmap_size: count of words reserved for the value/reference disambiguation bitmap
+   ; local block: holds the allocated block reference
+   ;
+   ; Returns: root reference for the newly-allocated array
+   call_2s __zml_array_refmap_size size -> refmap_size
+   call_vs __zml_array_alloc_storage size refmap_size -> block
+
+   ; set up the header word
+   storew __heap_start block ARRAY_TAG
+
+   ; store the array size
+   add block 1 -> sp
+   storew __heap_start sp size
+
+   push block                                               ; save a copy of array reference
+   add block 2 -> block                                     ; advance to element 0
+init_next:
+   jz size ?init_refmap 
+   storew __heap_start block init
+   inc 'block
+   dec 'size
+   jump init_next
+
+init_refmap:
+   ; 'block' now points at start of refmap
+   call_vn __zml_array_init_refmap block refmap_size is_ref
+
+   store 'block sp                                          ; restore saved value of 'block'
+   call_2s __zml_ref_register block -> sp
+   ret_popped
+
+
+.FUNCT zml_array_size, arr
    ; Retrieve the size of the specified array.
    ;
-   ; param arr: word index where array begins (heap-relative)
-   ; local header_size: size of array recorded in the array header
+   ; param arr: root reference which identifies an array
    ;
    ; Returns: array size
-   loadw __heap_start arr -> sp
-   and sp HEADER_DATA_MASK -> header_size
-   jl header_size HEADER_DATA_MASK ?small_array   ; jump if this is array uses compact representation
-   inc 'arr
-   loadw __heap_start arr -> sp
+   call_2s __zml_deref_root arr -> arr
+   add arr 1 -> sp
+   loadw __heap_start sp -> sp
    ret_popped
 
-small_array:
-   ret header_size
+
+.FUNCT zml_array_get_value, arr, index
+   ; Retrieve the element stored in the array at the given index, treating
+   ; it as a value type.
+   ;
+   ; param arr: root reference which identifies an array
+   ; param index: array value to retrieve; 0 <= index < array size
+   ;
+   ; Returns: array item
+   call_2s __zml_deref_root arr -> arr
+   call_vs __zml_array_get_element_address arr index -> sp
+   loadw __heap_start sp -> sp
+   ret_popped
+
+
+.FUNCT zml_array_get_ref, arr, index
+   ; Retrieve the element stored in the array at the given index, treating it as a reference type.
+   ; The value returned is registered as a new root reference; the caller takes responsibility for
+   ; releasing this  value using zml_ref_release.
+   ;
+   ; param arr: root reference which identifies an array
+   ; param index: array value to retrieve; 0 <= index < array size
+   ;
+   ; Returns: new reference to an array item
+   call_2s __zml_deref_root arr -> arr
+   call_vs __zml_array_get_element_address arr index -> sp
+   loadw __heap_start sp -> sp
+   call_2s __zml_ref_register sp -> sp
+   ret_popped
+
+
+.FUNCT zml_array_set_value, arr, index, val
+   ; Set the element stored in the array at the given index, using value-type storage.  The caller 
+   ; must ensure that the element previously stored at this array location was also of value type.
+   ; (Use zml_array_init_one to make a change the storage type of an array element.)
+   ;
+   ; param arr: root reference which identifies an array
+   ; param index: array value to set: 0 <= index < array size
+   ; param val: word to place in the array
+   call_2s __zml_deref_root arr -> arr
+   call_vs __zml_array_get_element_address arr index -> sp
+   storew __heap_start sp val
+   rtrue
+
+
+.FUNCT zml_array_set_ref, arr, index, val
+   ; Set the element stored in the array at the given index, using reference-type storage.  The
+   ; caller must ensure that the element previously stored at this array location was also of 
+   ; reference type.  (Use zml_array_init_one to make a change the storage type of an array
+   ; element.)
+   ;
+   ; param arr: root reference which identifies an array
+   ; param index: array value to set: 0 <= index < array size
+   ; param val: root reference for element to place in the array
+   call_2s __zml_deref_root arr -> arr
+   call_2s __zml_deref_root val -> val
+   call_vs __zml_array_get_element_address arr index -> sp
+   storew __heap_start sp val
+   rtrue
+
+
+.FUNCT __zml_array_refmap_size, arr_size
+   ; Compute the size of the refmap required for an array.
+   ;
+   ; param arr_size: size of the array
+   ;
+   ; Returns: refmap size
+   add arr_size 15 -> sp
+   div sp 16 -> sp                           ; ceil(size/16)
+   ret_popped
+
+
+.FUNCT __zml_array_alloc_storage, arr_size, refmap_size
+   ; Allocate storage for an array.
+   ;
+   ; param arr_size: number of words to be stored in the array
+   ; param refmap_size: number of words to reserve for refmap storage
+   ;
+   ; Returns: word address where array storage begins (heap-relative)
+   add arr_size refmap_size -> sp
+   add sp 3 -> sp                      ; sp holds total array storage size + 1
+   and sp NOT_ONE -> sp                ; even size ==> sp unchanged; odd size ==> sp - 1
+
+   call_2s __zml_alloc_block sp -> sp
+   ret_popped
 
 
 .FUNCT __zml_array_get_element_address, arr, index
@@ -206,232 +313,124 @@ small_array:
    ; param index: array location to retrieve; 0 <= index < array size
    ;
    ; Returns: word index where element is stored, relative to heap start
-   loadw __heap_start arr -> sp
-   and sp HEADER_DATA_MASK -> sp
-   jl sp HEADER_DATA_MASK ?small_array             ; jump if this array uses compact representation
    add arr 2 -> sp
    add sp index -> sp
    ret_popped
 
-small_array:
+
+.FUNCT __zml_array_set_refmap, arr, index, is_ref, mask, refmap_addr
+   ; Set the refmap bit associated with an array index.
+   ;
+   ; param arr: word index where array begins (heap-relative)
+   ; param index: bit number to be set; 0 <= index < array_size
+   ; param is_ref: nonzero if the refmap should indicate a reference here, 0 otherwise
+   ; local mask; bitmask for modifying the bit of interest
+   ; local refmap_addr: location of refmap word to be modified
+   mod index 16 -> sp
+   log_shift 1 sp -> mask
+
    add arr 1 -> sp
-   add sp index -> sp
-   ret_popped
+   loadw __heap_start sp -> sp                  ; sp holds array size
+   add arr sp -> refmap_addr
+   add refmap_addr 2 -> refmap_addr             ; refmap_addr holds address of first refmap word
 
+   div index 16 -> sp
+   add refmap_addr sp -> refmap_addr            ; refmap_addr holds address of refmap word to modify
+   loadw __heap_start refmap_addr -> sp         ; sp holds refmap word to be modified
 
-.FUNCT zml_array_get, arr, index
-   ; Retrieve the value stored in the array at the given index.
-   ;
-   ; param arr: word index where array begins (heap-relative)
-   ; param index: array value to retrieve; 0 <= index < array size
-   ;
-   ; Returns: array value
-   call_vs __zml_array_get_element_address arr index -> sp
-   loadw __heap_start sp -> sp
-   ret_popped
-   
+   jz is_ref ?clear_bit
+   ; set the bit to 1
+   or sp mask -> sp
+   jump set_word
+clear_bit:
+   ; clear the bit to 0
+   not mask -> mask
+   and sp mask -> sp
 
-.FUNCT zml_array_set, arr, index, val
-   ; Set the value stored in the array at the given index.
-   ;
-   ; param arr: word index where array begins (heap-relative)
-   ; param index: array value to set; 0 <= word < array size
-   ; param val: word to place in array
-   call_vs __zml_array_get_element_address arr index -> sp
-   storew __heap_start sp val
+set_word:
+   storew __heap_start refmap_addr sp
    rtrue
 
 
-.FUNCT __zml_array_mark_children, ref, is_set, count
+HIGH_BIT=32768
+
+.FUNCT __zml_array_mark_children, ref, is_set
    ; Recursively set or clear the 'mark' bit on all children belonging to
    ; this array.
    ;
    ; param ref: word index where array cell begins (heap-relative)
    ; param is_set: 1 if mark should be set, 0 if cleared
-   ; local count: loop counter
-   call_2s zml_array_size ref -> count
-
-   ; marking children in reverse order as we count down to 0
-mark_children:
-   jz count ?done                            ; jump if count reaches zero
-   dec 'count
-   call_vs zml_array_get ref count -> sp
-   call_vn __zml_mark_recursive sp is_set    ; mark child
-   jump mark_children
-
-done:
+   call_vn2 __zml_array_iter_refs ref __zml_mark_recursive_by_addr is_set 0
    rtrue
 
 
-.FUNCT __zml_array_iter_inplace, ref, f, arg2, arg3, i, size
-   ; Applies 'f' to the physical address of each array element, in turn.
+.FUNCT __zml_array_iter_refs, ref, f, arg2, arg3, count, curr_addr, curr_refmap_word, curr_refmap_addr, mask
+   ; Applies 'f' to the physical address of each reference-type array element, in turn.
+   ; Value-type array elements are skipped.
    ;
    ; param ref: word index where array cell begins (heap-relative)
    ; param f: function of four arguments, applied in turn to the heap-relative
    ;     word address of each element.
    ; param arg2, arg3: generic arguments passed to f
-   ; local i: counter
-   ; local size: size of array
-   store 'i 0
-   call_2s zml_array_size ref -> size
+   ; local count: loop counter
+   ; local curr_addr: address of word currently being examined
+   ; local curr_refmap_word: value of the current refmap word being examined
+   ; local curr_refmap_addr: address of current refmap word being examined
+   ; local mask: bitmask used to extract bit of interest
+   add ref 1 -> sp
+   loadw __heap_start sp -> count
+   call_vs __zml_array_get_element_address ref 0 -> curr_addr
+   add curr_addr count -> curr_refmap_addr
 
-loop:
-   jeq i size ?done                          ; jump if array has been traversed
-   call_vs __zml_array_get_element_address ref i -> sp
-   call_vn f sp arg2 arg3
-   inc 'i
-   jump loop
+   ; Fast-path code for value-type arrays: if the entire refmap word is zero,
+   ; then we can skip 16 entries immediately.
+next_refmap_word:
+   jz count ?done
+   loadw __heap_start curr_refmap_addr -> curr_refmap_word
+   jz curr_refmap_word ?skip_16              ; jump if this refmap word has only value elements
+   store 'mask 1
+
+next_word:
+   jz count ?done
+   and curr_refmap_word mask -> sp
+   jz sp ?incr_word                          ; jump if this represents a value-type word
+   call_vn f curr_addr arg2 arg3             ; this is a ref type, so invoke the function pointer
+
+incr_word:
+   dec 'count
+   inc 'curr_addr
+   jeq mask HIGH_BIT ?incr_refmap            ; jump if this was the last of 16 bits in one refmap word
+   log_shift mask 1 -> mask
+   jump next_word
+
+incr_refmap:
+   jz count ?done
+   inc 'curr_refmap_addr
+   jump next_refmap_word
+
+skip_16:
+   jl count 16 ?done
+   sub count 16 -> count
+   jump next_refmap_word
 
 done:
    rtrue
 
 
-.FUNCT __zml_array_storage_size, ref
+.FUNCT __zml_array_storage_size, ref, arr_size
    ; Gets the storage size reserved for this array, in words.
    ;
    ; param ref: word index where array begins (heap-relative)
+   ; local arr_size: size of the array payload
    ;
    ; Returns: storage size
-   loadw __heap_start ref -> sp
-   and sp HEADER_DATA_MASK -> sp
-   jl sp HEADER_DATA_MASK ?small_array             ; jump if this array uses compact representation
-   call_2s zml_array_size ref -> sp
-   add sp 3 -> sp
-   and sp NOT_ONE -> sp   ; even size ==> sp = size+2; odd size ==> sp = size+3
-   ret_popped
-
-small_array:
-   call_2s zml_array_size ref -> sp
-   add sp 2 -> sp
-   and sp NOT_ONE -> sp   ; even size ==> sp = size+2; odd size ==> sp = size+1
-   ret_popped
-
-
-.FUNCT zml_alloc_value_list, init_val, next_cell
-   ; Allocate a list cell, which shall contain the given initial
-   ; value and pointer to the next cell.  The cell contents shall
-   ; be treated as a pointer (not a value).
-   ;
-   ; param init_val: initial value to store in cell
-   ; param next_cell: pointer to next list cell, or LIST_NULL
-   ;
-   ; Returns: word index where cell begins (heap-relative)
-   call_vs __zml_alloc_list init_val next_cell VALUELIST_TAG -> sp
-   ret_popped
-
-
-.FUNCT zml_alloc_ref_list, init_val, next_cell
-   ; Allocate a list cell, which shall contain the given initial reference
-   ; value and pointer to the next cell.  The cell contents shall be treated
-   ; as a value (not a pointer).
-   ;
-   ; param init_val: initial value to store in cell
-   ; param next_cell: pointer to next list cell, or LIST_NULL
-   ;
-   ; Returns: word index where cell begins (heap-relative)
-   call_vs __zml_alloc_list init_val next_cell REFLIST_TAG -> sp
-   ret_popped
-
-
-.FUNCT __zml_alloc_list, init_val, next_cell, header_word, ref
-   ; Allocate a list cell, which shall contain the given initial value
-   ; and pointer to the next cell.  The list shall be created with the
-   ; specified header word.
-   ;
-   ; param init_val: initial value to place in cell
-   ; param next_cell: pointer to next cell, or LIST_NULL
-   ; param header_word: header value to place in cell
-   ; local ref: holds a reference to the allocated block
-   ;
-   ; Returns: word index where cell begins (heap-relative)
-   call_2s __zml_alloc_block 4 -> ref
-   storew __heap_start ref header_word
    add ref 1 -> sp
-   storew __heap_start sp init_val
-   add ref 2 -> sp
-   storew __heap_start sp next_cell
-   ret ref
-
-
-.FUNCT zml_list_head, list
-   ; Retrieve the value stored in the given list cell.
-   ;
-   ; param list: word index where list cell begins (heap-relative)
-   ;
-   ; Returns: value
-   inc 'list
-   loadw __heap_start list -> sp
+   loadw __heap_start sp -> arr_size
+   call_2s __zml_array_refmap_size arr_size -> sp  ; sp holds count of words reserved for refmap
+   add sp arr_size -> sp
+   add sp 3 -> sp                                  ; required storage size + 1
+   and sp NOT_ONE -> sp                            ; even size ==> sp unchanged; odd size ==> sp - 1
    ret_popped
-
-
-.FUNCT zml_list_tail, list
-   ; Retrieve the location of the list cell which is pointed to
-   ; by the given cell.
-   ;
-   ; param list: word index where list cell begins (heap-relative)
-   ;
-   ; Returns: next list cell, or LIST_NULL if end-of-list
-   add list 2 -> sp
-   loadw __heap_start sp -> sp
-   ret_popped
-
-
-.FUNCT __zml_value_list_mark_children, ref, is_set
-   ; Recursively set or clear the 'mark' bit on the chain of list cells to
-   ; which this cell links.  The value contained in this list cell is
-   ; *not* marked.
-   ;
-   ; param ref: word index where list cell begins (heap-relative)
-   ; param is_set: 1 if mark should be set, 0 if cleared
-   call_2s zml_list_tail ref -> ref
-   jeq ref LIST_NULL ?end_of_list
-   call_vn __zml_mark_recursive ref is_set
-end_of_list:
-   rtrue
-
-
-.FUNCT __zml_value_list_fixup_pointers, ref, table, table_dwords, pointer_addr
-   ; Given a break table, adjusts the value of the pointer stored
-   ; in this value list cell (if any).
-   ;
-   ; param ref: word index where list cell begins (heap-relative)
-   ; param table: word index where break table begins (heap-relative)
-   ; param table_dwords: length of break table, in dwords
-   ; local pointer_addr: location of value to be fixed up
-   add ref 2 -> pointer_addr
-   loadw __heap_start pointer_addr -> sp
-   jeq sp LIST_NULL ?end_of_list
-   call_vn __zml_fixup_pointer pointer_addr table table_dwords
-end_of_list:
-   rtrue
-
-
-.FUNCT __zml_ref_list_fixup_pointers, ref, table, table_dwords, pointer_addr
-   ; Given a break table, adjusts the value of the pointers stored
-   ; in this reference list cell.
-   ;
-   ; param ref: word index where list cell begins (heap-relative)
-   ; param table: word index where break table begins (heap-relative)
-   ; param table_dwords: length of break table, in dwords
-   ; local pointer_addr: location of value to be fixed up
-   add ref 1 -> pointer_addr
-   loadw __heap_start pointer_addr -> sp
-   call_vn __zml_fixup_pointer pointer_addr table table_dwords          ; fixup head
-   call_vn __zml_value_list_fixup_pointers ref table table_dwords       ; fixup tail
-   rtrue
-
-
-.FUNCT __zml_ref_list_mark_children, ref, is_set
-   ; Recursively set or clear the 'mark' bit on all children belonging to
-   ; this list cell, and on the chain of list cells to which this cell
-   ; links.
-   ;
-   ; param ref: word index where list cell begins (heap-relative)
-   ; param is_set: 1 if mark should be set, 0 if cleared
-   call_2s zml_list_head ref -> sp
-   call_vn __zml_mark_recursive sp is_set
-   call_vn __zml_value_list_mark_children ref is_set
-   rtrue
 
 
 .FUNCT __zml_mark_recursive, ref, is_set, tag
@@ -444,25 +443,22 @@ end_of_list:
    ; local tag: stores value of block tag
    call_vs __zml_mark ref is_set -> sp
    jz sp ?already_marked                  ; jump if already marked
-   call_2s __zml_tag_get ref -> tag       ; dispatch based on tag value
-   jeq tag REFARRAY_TAG  ?ref_array
-   jeq tag VALUELIST_TAG ?value_list
-   jeq tag REFLIST_TAG   ?ref_list
-   rtrue                                  ; default case: no pointers to children
 
-already_marked:
-   rtrue
-
-ref_array:
+   ; Note: in general, we could dispatch to multiple data structure handlers
+   ; based on the header tag value.  At the moment, we only have the one data
+   ; structure to worry about.
    call_vn __zml_array_mark_children ref is_set
    rtrue
 
-value_list:
-   call_vn __zml_value_list_mark_children ref is_set
-   rtrue
 
-ref_list:
-   call_vn __zml_ref_list_mark_children ref is_set
+.FUNCT __zml_mark_recursive_by_addr, ref_addr, is_set
+   ; As __zml_mark_recursive, but the [ref_addr] is the physical address of a
+   ; block reference.
+   ;
+   ; param ref_addr: word index where the ref is located (heap-relative)
+   ; param is_set: 1 if mark should be set, 0 if cleared
+   loadw __heap_start ref_addr -> sp
+   call_vn __zml_mark_recursive sp is_set
    rtrue
 
 
@@ -493,23 +489,14 @@ no_change:
    rfalse
 
 
-.FUNCT __zml_allocated_block_size, ref, tag
+.FUNCT __zml_allocated_block_size, ref
    ; Determines the number of words in an allocated memory block.
    ;
    ; param ref: word index where block begins (heap-relative)
-   ; local tag: storage for the block tag
-   call_2s __zml_tag_get ref -> tag       ; dispatch based on tag value
-   jeq tag VALUEARRAY_TAG ?tag_array
-   jeq tag REFARRAY_TAG   ?tag_array
-   jeq tag VALUELIST_TAG  ?tag_list
-   jeq tag REFLIST_TAG    ?tag_list
-
-tag_array:
+   ;
+   ; Note: in general, we could differentiate multiple data structures by examining the
+   ; type tag.  At present, we only have array types to worry about.
    call_2s __zml_array_storage_size ref -> sp
-   ret_popped
-
-tag_list:
-   push 4
    ret_popped
 
 
@@ -587,14 +574,12 @@ no_new_freelist:
 
 
 .FUNCT __zml_compact, table_dwords, source, dest, size, freelist_next
-   ; Compacts the heap, using a Haddon-Waite-style algorithm.  This is
-   ; typically called when the heap has been freshly swept.
+   ; Compacts the heap, using a Haddon-Waite-style algorithm.  This is typically called when the
+   ; heap has been freshly swept.
    ;
-   ; The implementation uses an optimization which is not present in
-   ; Haddon-Waite: the break table is constructed on the stack in
-   ; a single pass, then relocated to free heap memory after the
-   ; memory contents are moved.  This approach avoids the need to
-   ; "roll the table" and sort it.
+   ; The implementation uses an optimization which is not present in Haddon-Waite: the break table
+   ; is constructed on the stack in a single pass, then relocated to free heap memory after the
+   ; memory contents are moved.  This approach avoids the need to "roll the table" and sort it.
    ;
    ; local table_dwords: number of break table entries
    ; local source: address of a block to be moved
@@ -631,6 +616,8 @@ traverse_freelist:
    mul size 2 -> size
 
    ; relocate the block
+   ; FIXME: even if the arithmetic above works out OK, this is definitely wrong for
+   ; size > 32768.
    copy_table source dest size
 
    ; construct a new freelist entry for the merged free space
@@ -675,24 +662,10 @@ copy_done:
 
 traverse_compacted:
    jeq block freelist_head ?end_traversal                            ; jump if we reach end of compacted heap
-   call_2s __zml_tag_get block -> tag                                ; dispatch based on tag value
-   jeq tag VALUEARRAY_TAG ?fixup_done
-   jeq tag REFARRAY_TAG   ?tag_ref_array
-   jeq tag VALUELIST_TAG  ?tag_value_list
-   jeq tag REFLIST_TAG    ?tag_ref_list
 
-tag_ref_array:
-   call_vn2 __zml_array_iter_inplace block __zml_fixup_pointer table table_dwords
-   jump fixup_done
-
-tag_value_list:
-   call_vn __zml_value_list_fixup_pointers block table table_dwords
-   jump fixup_done
-   
-tag_ref_list:
-   call_vn __zml_ref_list_fixup_pointers block table table_dwords
-
-fixup_done:
+   ; note: in general we could dispatch based on type tag, but
+   ; at present we only have arrays to worry about.
+   call_vn2 __zml_array_iter_refs block __zml_fixup_pointer table table_dwords
    call_2s __zml_allocated_block_size block -> sp
    add block sp -> block
    jump traverse_compacted
@@ -705,10 +678,10 @@ end_traversal:
    sub roots_table_boundary 1 -> block
 check_next_root:
    inc 'block
-   jeq block HEAP_WORDS ?end_roots_table                       ; jump if roots table has been traversed
+   jeq block HEAP_WORDS ?end_roots_table              ; jump if roots table has been traversed
    loadw __heap_start block -> tag
-   jeq tag LIST_NULL ?check_next_root                          ; jump if this is end-of-freelist
-   jl tag roots_table_boundary ?is_heap_ref                    ; jump if this is a heap pointer and not a freelist entry
+   jeq tag LIST_NULL ?check_next_root                 ; jump if this is end-of-freelist
+   jl tag roots_table_boundary ?is_heap_ref           ; jump if this is a heap pointer and not a freelist entry
    jump check_next_root
 
 is_heap_ref:
@@ -846,7 +819,7 @@ return_no_match:
 
 
 .FUNCT __zml_fixup_pointer, pointer_addr, table, table_dwords, pointer_val
-   ; Given a break table and the address of a  pointer to be adjusted,
+   ; Given a break table and the address of a pointer to be adjusted,
    ; updates the pointer in-place.
    ;
    ; param pointer_addr: word address containing a pointer (heap-relative)
@@ -870,17 +843,6 @@ return_no_match:
 
 no_fixup:
    rtrue
-
-
-.FUNCT __zml_tag_get, ref
-   ; Retrieve the value of the tag for the given block.
-   ;
-   ; param ref: word index of start of the block (heap-relative)
-   ;
-   ; Returns: tag value
-   loadw __heap_start ref -> sp
-   and sp TAG_MASK -> sp
-   ret_popped
 
 
 .FUNCT __zml_alloc_block, size_words, curr_node, prev_node, next_node, node_size, is_swept, is_compacted
@@ -1014,8 +976,8 @@ update_freelist_end:
    rtrue
 
 
-.FUNCT zml_register_root, heap_ref, root, size, is_compacted
-   ; Creates a new entry in the table of GC roots.
+.FUNCT __zml_ref_register, heap_ref, root, size, is_compacted
+   ; Create a new entry in the table of GC roots.
    ;
    ; param heap_ref: word pointer to a heap-allocated block which is to be
    ;     registered as a root (heap relative)
@@ -1069,8 +1031,8 @@ out_of_memory:
    quit
 
 
-.FUNCT zml_unregister_root, root_ref
-   ; Unregister a root reference which had been obtained from zml_register_root.
+.FUNCT zml_ref_release, root_ref
+   ; Unregister a root reference which had been obtained from __zml_ref_register.
    ;
    ; param root_ref: root reference to be dropped from the GC roots table
    storew __heap_start root_ref root_freelist_head
@@ -1078,16 +1040,16 @@ out_of_memory:
    rtrue
 
 
-.FUNCT zml_deref_root, root
+.FUNCT __zml_deref_root, root
    ; Dereferences a root reference.
    ;
-   ; param root: root identifier obtained from zml_register_root.
+   ; param root: root identifier obtained from __zml_ref_register.
    ;
    ; Returns: word pointer to the heap-allocated block which was registered
    ;    as a root (heap relative).  This pointer remains valid only until
    ;    the next call to zml_alloc_*.
    loadw __heap_start root -> sp
-   ret sp
+   ret_popped
 
 
 .FUNCT __zml_mark_roots, i, roots_table_boundary, heap_ref
@@ -1103,11 +1065,11 @@ out_of_memory:
 
    load 'roots_table_boundary -> i
 check_next_root:
-   jeq i HEAP_WORDS ?end_roots_table                           ; jump if roots table has been traversed
+   jeq i HEAP_WORDS ?end_roots_table                  ; jump if roots table has been traversed
    loadw __heap_start i -> heap_ref
    inc 'i
-   jeq heap_ref LIST_NULL ?check_next_root                     ; jump if this is end-of-freelist
-   jl heap_ref roots_table_boundary ?is_heap_ref               ; jump if this is a heap pointer and not a freelist entry
+   jeq heap_ref LIST_NULL ?check_next_root            ; jump if this is end-of-freelist
+   jl heap_ref roots_table_boundary ?is_heap_ref      ; jump if this is a heap pointer and not a freelist entry
    jump check_next_root
 
 is_heap_ref:
@@ -1119,27 +1081,27 @@ end_roots_table:
 
 
 .FUNCT zml_print_dec, i
-	 ; Prints an integer, using decimal notation.
-	 ;
-	 ; param i: value to be printed
-	 print_num i
-	 rtrue
+   ; Prints an integer, using decimal notation.
+   ;
+   ; param i: value to be printed
+   print_num i
+   rtrue
 
 
 .FUNCT zml_print_newline, unit
- 	 ; Prints a newline character.
-	 ;
-	 ; param unit: receives value 0 as the unit argument
-	 new_line
-	 rtrue
+   ; Prints a newline character.
+   ;
+   ; param unit: receives value 0 as the unit argument
+   new_line
+   rtrue
 
 
 .FUNCT zml_exit, unit
-	 ; Immediately terminates the program.
-	 ;
-	 ; param unit: receives value 0 as the unit argument
-	 quit
-	 rtrue
+   ; Immediately terminates the program.
+   ;
+   ; param unit: receives value 0 as the unit argument
+   quit
+   rtrue
 
 
 ; User code goes here.  It shall define the entry point "zml_main",

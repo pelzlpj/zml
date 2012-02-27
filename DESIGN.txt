@@ -35,25 +35,20 @@ Allocation looks something like this:
       conserving memory; the minimum block size would be two words, and
       there would be zero memory overhead during the compaction.
 
-Use of the ZML runtime requires the following discipline for stack
-usage:
+Use of the ZML runtime requires some discipline for managing reference
+lifetimes.  When client code receives a reference from one of the
+functions in the ZML runtime API, that reference is automatically
+registered in the table of roots.  The client code takes responsibility
+for explicitly releasing the reference when it is no longer required.
 
-   A) When a function needs to (1) perform an operation which may
-      allocate memory and then (2) dereference a heap-allocated block,
-      then the heap-allocated block must be referred to via the roots
-      lookup table.
-   
-   B) When a function allocates a block which it needs to refer to via
-      the roots lookup table, then the function must explicitly free
-      the root reference when it becomes unreachable (as the function
-      returns, if not before--unless the block is returned to the
-      caller, in which case a reference is live).
+The ZML runtime creates a new reference as the return value for each
+of the following API calls:
 
-In general, when calling a function using a heap-allocated block as an
-argument, it will be the roots table pointer which is passed as the
-argument to 'call'.  An exception could be when static analysis
-indicates that both that function and all recursively-called functions
-do not allocate memory.
+   * zml_array_alloc 
+   * zml_ref_clone 
+   * zml_array_get_ref
+
+References created in this fashion can be released via 'zml_ref_release'.
 
 Mark-and-Sweep:
 
@@ -90,76 +85,54 @@ Value Representation:
    * Blocks containing values shall begin with a header word:
 
                         ------------
-               Word 1:  |0|M|Tag|  |
+               Word 0:  |0|M|T|    |
                         ------------
 
      The first bit is 0, to indicate that this is a value and not a free
      block.  The second bit is the Mark bit used by the mark/sweep
-     algorithm.  The Tag is a four bit value used to differentiate all the
-     supported block types.  The remaining 10 bits are reserved for type-
-     specific data.
+     algorithm.  The third bit is the type tag bit.  The remaining 13 bits
+     are reserved for type-specific data.
 
-   * Tag 0 is used for a "value array cell", i.e. a heap-allocated block
-     which contains a sequence of words which are not pointers.  To
-     conserve space, the array cell has two possible representations.
-     When the array size is in the range [0, 2^10-2], then the array
-     is expressed as follows:
+   * Type tag 0 is used for an "array cell", a general purpose storage
+     element.  The array cell can store both value and reference types
+     simultaneously, making it an ideal representation for ML records,
+     list cons cells, etc.
 
-                        +-------------+
-               Word 1:  |0|M| 0|  N-1 |
-               Word 2:  | (value 0)   |
-               Word 3:  | (value 1)   |
-                ...     |   ...       |
-               Word N:  | (value N-2) |
-                        |   padding   |
-                        +-------------+
-     
-     In other words, the size of the array is packed into the reserved
-     space in the header.  When the size of the array exceeds 2^10-2,
-     then the array has an additional word reserved for its size:
+     The size of the array is packed into Word 1.
 
-                        +-------------+
-               Word 1:  |0|M| 0|2^10-1|
-               Word 2:  |   N - 2     |
-               Word 3:  | (value 0)   |
-               Word 3:  | (value 1)   |
-                ...     |   ...       |
-               Word N:  | (value N-3) |
-                        |   padding   |
-                        +-------------+
+     Assuming the array holds K data words, the array reserves R = (K +
+     15)/16 words to store the "refmap".  This is a bitmap: bit 'k' of
+     the bitmap is a 1 iff the value stored at index 'k' in the array
+     is a reference (i.e. the mark-and-sweep algorithm needs to follow
+     the pointer).
 
-     In either case, the storage size of the array may be padded by a
-     single word as necessary to satisfy the two-word-aligned
-     length requirement.
+     The layout of the array is as follows:
 
-   * Tag 1 is used for a "reference array cell", i.e. a heap-allocated
-     block which contains pointers to other blocks.  The layout is otherwise
-     identical to the value array cell.  (Note that the reference array
-     cell also serves as storage for ML record types.)
+                              +-------------+
+                     Word 0:  |0|M|    0    |
+                     Word 1:  |      K      |
+                     Word 2:  | (value 0)   |
+                     Word 3:  | (value 1)   |
+                      ...     |   ...       |
+                   Word K+1:  | (value K-1) |
+                   Word K+2:  | (refmap 0)  |
+                   Word K+3:  | (refmap 1)  |
+                      ...     |   ...       |
+                     Word N:  |(refmap R-1) |
+                              |   padding   |
+                              +-------------+
 
-   * Tag 2 is used for a "value list cell", i.e. a heap-allocated block
-     which contains both a value and a pointer to another value list cell.
-     To satisfy alignment, a padding word is appended; its content is
-     undefined.
+     When an item stored in the array is a reference type, its in-memory
+     representation is a heap-relative word address.  (In other words,
+     when zml_array_set_ref is called with a root reference argument, the
+     roots table entry is dereferenced and the pointed-to reference is
+     the thing that gets physically stored in the array.)
 
-                        +-------------+
-               Word 1:  |0|M| 2|      |
-               Word 2:  |   (value)   |
-               Word 3:  | (next ptr)  |
-               Word 4:  |   padding   |
-                        +-------------+
-     
-     A list cell need not point to another cell (end of list condition).
-     In this case, Word 3 shall have value 0xffff.
+     (The initial implementation of the array cell is optimized for simplicity.
+     Space optimization can come later.)
 
-     Note: with some care, it might be possible to fit a list cell in two
-     words.  The "next cell" pointer can be represented in 14 bits at
-     most...
+   * Type tag 1 is reserved.
 
-   * Tag 3 is used for a "reference list cell", i.e. a heap-allocated
-     block which contains both a pointer to an arbitrary item and a
-     pointer to another value list cell.  The layout is otherwise identical
-     to the value list cell.
 
 Roots Table:
 

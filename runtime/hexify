@@ -1,0 +1,3 @@
+#!/bin/bash
+
+./decode_dyn runtime.z5 $1 | xxd
