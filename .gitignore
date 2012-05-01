@@ -1,0 +1,11 @@
+*.swo
+*.swp
+*.byte
+*.opt
+core/_build
+core/_tags
+core/setup.ml
+core/setup.data
+core/setup.log
+core/myocamlbuild.ml
+core/parser.output
