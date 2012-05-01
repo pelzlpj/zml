@@ -1,4 +1,9 @@
-* Closure conversion.
+* Fix first-class references to external function definitions, e.g. "let x = zml_print_endline in ...".
+  A general (but suboptimal) solution is to construct a closure array at the point of the
+  let-binding.  The handler for ApplyUnknown will then do the correct thing.
+
+  (A more efficient solution would simply substitute x -> zml_print_endline as long as 'x' only
+  appears in fully-evaluted function applications.)
 
 * Refactor internal representation of certain expressions.  At this point it looks like there's a
   lot of code that could be removed by coalescing all the integer manipulators into the following:
@@ -12,10 +17,6 @@
 
 * Parser rewrite.  I'm not liking the way the ocamlyacc parser is shaping up.  It's difficult to
   read, and I'm not sure it will scale up well to more complicated syntax.  I plan to rewrite using
-	a recursive descent approach.  I want to do this rewrite *before* adding significant amounts of
-	new syntax.
-
-* Introduction of reference types.  The runtime library already has reference type support, but the
-	zasm layer needs a bunch of work to invoke zml_register_root and zml_unregister_root in order to
-	manage the lifetimes of reference types declared on the stack.
+  a recursive descent approach.  I want to do this rewrite *before* adding significant amounts of
+  new syntax.
 
