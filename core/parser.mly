@@ -1,9 +1,10 @@
 %{
-(*  zml -- an ML compiler for the Z-Machine
- *  Copyright (C) 2009-2011 Paul Pelzl
+(******************************************************************************
+ *  ZML -- an ML compiler targeting interactive fiction virtual machines
+ *  Copyright (C) 2011-2012 Paul Pelzl
  *
  *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License, Version 2,
+ *  it under the terms of the GNU General Public License, version 2,
  *  as published by the Free Software Foundation.
  *
  *  This program is distributed in the hope that it will be useful,
@@ -11,13 +12,13 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
  *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *  You should have received a copy of the GNU General Public License along
+ *  with this program; if not, write to the Free Software Foundation, Inc.,
+ *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  *  Please send bug reports, patches, etc. to Paul Pelzl at 
  *  <pelzlpj@gmail.com>.
- *)
+ ******************************************************************************)
 
 open Syntax
 
