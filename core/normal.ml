@@ -141,7 +141,7 @@ let free_var () =
 (* Get the next free variable id, binding [name] to the id via the
  * [renames] map. *)
 let free_named_var renames name typ =
-  let x = {VarID.id = free_var(); VarID.tp = typ} in
+  let x = {VarID.id = free_var (); VarID.tp = typ} in
   (SMap.add name x renames, x)
 
 
