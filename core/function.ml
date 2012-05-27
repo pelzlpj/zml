@@ -111,7 +111,7 @@ let ref_var   (v : VarID.t) = {SPVar.id = v.VarID.id; SPVar.storage = Ref}
 
 
 (* Get the storage policy associated with a type.  (For function types, the resulting
- * storage policy is always Ref. *)
+ * storage policy is always Ref.) *)
 let storage_of_type tp =
   match tp with
   | Type.Unit | Type.Bool _ | Type.Int _ ->
@@ -435,9 +435,20 @@ let rec extract_functions_aux
         in
         make_closure_def f_id closure_id free_vars f_scope_expr (extract_functions_aux callable_ids)
   | Normal.External (f_name, f_id, f_ext_impl, f_arg_count, f_scope_expr) ->
-      let callable_ids = VMap.add f_id Known callable_ids in
-      let () = add_function_def (value_var f_id) {f_name; f_impl = ExtFunc (f_ext_impl, f_arg_count)} in
-      extract_functions_aux callable_ids f_scope_expr
+      if not (is_first_class f_id f_scope_expr) then
+        (* Known-function optimization.  This is an externally-defined function which is always
+         * invoked directly, so we don't need to box it in a closure array. *)
+        let callable_ids = VMap.add f_id Known callable_ids in
+        let () = add_function_def (value_var f_id) {f_name; f_impl = ExtFunc (f_ext_impl, f_arg_count)} in
+        extract_functions_aux callable_ids f_scope_expr
+      else
+        (* Closure conversion.  This is an externally-defined function which gets stored at least
+         * once as a function pointer.  Consequently we need to box it in a closure array, so that
+         * the function pointer may be safely invoked by ApplyUnknown. *)
+        let closure_id = {SPVar.id = Normal.free_var (); SPVar.storage = Ref} in
+        let callable_ids = VMap.add f_id (Closure closure_id) callable_ids in
+        let () = add_function_def (value_var f_id) {f_name; f_impl = ExtFunc (f_ext_impl, f_arg_count)} in
+        make_closure_def f_id closure_id VSet.empty f_scope_expr (extract_functions_aux callable_ids)
   | Normal.Apply (f_id, f_args) ->
       (* FIXME: if the number of args passed does not match the number of args in the function
        * definition, then this expression should reduce to some sort of closure. *)

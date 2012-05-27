@@ -1,9 +1,7 @@
-* Fix first-class references to external function definitions, e.g. "let x = zml_print_endline in ...".
-  A general (but suboptimal) solution is to construct a closure array at the point of the
-  let-binding.  The handler for ApplyUnknown will then do the correct thing.
-
-  (A more efficient solution would simply substitute x -> zml_print_endline as long as 'x' only
-  appears in fully-evaluted function applications.)
+* Support known-function optimization *whenever* a function may be invoked directly with a full
+  argument list.  Whenever a function is first-class it can simply be compiled twice: once in
+  known-function form and once in closure form.  The context at the call site will determine which
+  form should be called.
 
 * Polymorphic functions.  I had sort of planned to implement this by code duplication: generating a
   specialized implementation for every different instantiation type.
