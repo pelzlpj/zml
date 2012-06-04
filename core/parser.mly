@@ -79,6 +79,7 @@ let typed_expr_sym expr type_annot = typed_expr expr type_annot (symbol_range ()
 
 /* Precedence rules. */
 
+%left     TYPE_ARROW
 %nonassoc IN
 %nonassoc below_SEMI
 %nonassoc SEMI
@@ -90,9 +91,11 @@ let typed_expr_sym expr type_annot = typed_expr expr type_annot (symbol_range ()
 %left     STAR SLASH MOD
 %nonassoc prec_unary_minus
 
+/* The starting tokens of simple_expr have highest precedence. */
+%nonassoc LPAREN BOOL INT IDENT
+
 
 /* The entry point must be an expression of the given type. */
-
 %type <Syntax.t> expr
 %start expr
 
@@ -102,6 +105,7 @@ let typed_expr_sym expr type_annot = typed_expr expr type_annot (symbol_range ()
 
 seq_expr:
   | expr
+    %prec below_SEMI
     { $1 }
   | expr SEMI seq_expr
     { untyped_expr_sym (Let (Id.mktmp (), [], $1, $3)) }
@@ -120,6 +124,7 @@ expr:
   | IF expr THEN expr ELSE expr
     { untyped_expr_sym (If ($2, $4, $6)) }
   | NOT expr
+    %prec prec_unary_minus
     { untyped_expr_sym (Not ($2)) }
   | MINUS expr
     %prec prec_unary_minus
