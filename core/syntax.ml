@@ -42,6 +42,8 @@ and expr_t =
   | LetRec of string * (string list) * t * t  (* newly bound variable may recur in the "equals" expression *)
   | External of string * Type.t * string * t  (* external function declaration *)
   | Apply of t * (t list)
+  | ArrayGet of t * t
+  | ArraySet of t * t * t
 
 
 (* Construct an AST node with no type information *)
@@ -116,6 +118,10 @@ let rec print_ast (ast : t) =
       sprintf "Apply (%s [%s])"
         (print_ast a)
         (String.concat "; " (List.fold_left (fun acc b -> acc @ [print_ast b]) [] b_list))
+    | ArrayGet (a, b) ->
+      sprintf "ArrayGet (%s, %s)" (print_ast a) (print_ast b)
+    | ArraySet (a, b, c) ->
+      sprintf "ArraySet (%s, %s, %s)" (print_ast a) (print_ast b) (print_ast c)
   in
   let range_s =
     let print_pos pos =

@@ -84,6 +84,9 @@ type t =
   | LetFun of string * var_t * (var_t list) * t * t       (* Let binding for a function definition *)
   | External of string * var_t * string * int * t         (* External function definition *)
   | Apply of var_t * (var_t list)                         (* Function application *)
+  | ArrayMake of var_t * var_t                            (* Array constructor *)
+  | ArrayGet of var_t * var_t                             (* Array lookup *)
+  | ArraySet of var_t * var_t * var_t                     (* Array mutate *)
 
 
 let rec string_of_normal (ast : t) : string =
@@ -117,6 +120,12 @@ let rec string_of_normal (ast : t) : string =
   | Apply (f, args) ->
       sprintf "apply(%s %s)" (VarID.to_string f)
         (String.concat " " (List.map (fun x -> VarID.to_string x) args))
+  | ArrayMake (len, value) ->
+      sprintf "array_make(%s, %s)" (VarID.to_string len) (VarID.to_string value)
+  | ArrayGet (arr, index) ->
+      sprintf "%s.(%s)" (VarID.to_string arr) (VarID.to_string index)
+  | ArraySet (arr, index, value) ->
+      sprintf "%s.(%s) <- %s" (VarID.to_string arr) (VarID.to_string index) (VarID.to_string value)
 
 
 
@@ -200,7 +209,7 @@ and normalize_let
     : t =
   let (in_renames, binding) =
     match name.Typing.bind_type with
-    | Type.Unit | Type.Bool | Type.Int | Type.Arrow (_, _) ->
+    | Type.Unit | Type.Bool | Type.Int | Type.Arrow (_, _) | Type.Array _ ->
         free_named_var renames name.Typing.bind_name name.Typing.bind_type
     | Type.Var _ ->
         (* FIXME: polymorphism? *)
@@ -211,7 +220,7 @@ and normalize_let
     (fun (ren, vars) arg ->
       let (ren, new_arg_var) =
         match arg.Typing.bind_type with
-        | Type.Unit | Type.Bool | Type.Int | Type.Arrow (_, _) ->
+        | Type.Unit | Type.Bool | Type.Int | Type.Arrow (_, _) | Type.Array _ ->
             free_named_var ren arg.Typing.bind_name arg.Typing.bind_type
         | Type.Var _ ->
             (* FIXME: polymorphism? *)
@@ -253,7 +262,11 @@ and normalize_aux
           | Type.Int
           | Type.Arrow _ ->
               (* Either an integer value equality test, or a function pointer equality test *)
+              (* FIXME: this is probably wrong for closures... *)
               Conditional (IfEq, a_binding, b_binding, Int 1, Int 0)
+          | Type.Array _ ->
+              (* FIXME: structural equality, should invoke elementwise comparison *)
+              assert false
           | Type.Var _ ->
               (* Type variables shall be eliminated *)
               assert false)
@@ -269,6 +282,9 @@ and normalize_aux
           | Type.Arrow _ ->
               (* Either an integer value inequality test, or a function pointer inequality test *)
               Conditional (IfEq, a_binding, b_binding, Int 0, Int 1)
+          | Type.Array _ ->
+              (* FIXME: structural equality, should invoke elementwise comparison *)
+              assert false
           | Type.Var _ ->
               (* Type variables shall be eliminated *)
               assert false)
@@ -321,6 +337,9 @@ and normalize_aux
           | Type.Arrow _ ->
               (* Either an integer value equality test, or a function pointer equality test *)
               Conditional (IfEq, a_binding, b_binding, true_norm, false_norm)
+          | Type.Array _ ->
+              (* FIXME: structural equality, should invoke elementwise comparison *)
+              assert false
           | Type.Var _ ->
               (* Type variables shall be eliminated *)
               assert false)
@@ -338,6 +357,9 @@ and normalize_aux
           | Type.Arrow _ ->
               (* Either an integer value inequality test, or a function pointer inequality test *)
              Conditional (IfEq, a_binding, b_binding, false_norm, true_norm)
+          | Type.Array _ ->
+              (* FIXME: structural equality, should invoke elementwise comparison *)
+              assert false
           | Type.Var _ ->
               (* Type variables shall be eliminated *)
               assert false)
@@ -405,6 +427,20 @@ and normalize_aux
         arg_bindings
         (insert_let renames fun_expr
           (fun fun_binding -> Apply (fun_binding, arg_ids)))
+  | Typing.ArrayMake (len, value) ->
+      insert_let renames len
+        (fun len_binding -> insert_let renames value
+          (fun value_binding -> ArrayMake (len_binding, value_binding)))
+  | Typing.ArrayGet (arr, index) ->
+      insert_let renames arr
+        (fun arr_binding -> insert_let renames index
+          (fun index_binding -> ArrayGet (arr_binding, index_binding)))
+  | Typing.ArraySet (arr, index, value) ->
+      insert_let renames arr
+        (fun arr_binding -> insert_let renames index
+          (fun index_binding -> insert_let renames value
+            (fun value_binding -> ArraySet (arr_binding, index_binding, value_binding))))
+
 
 
 (* For the sake of readability, flatten nested let-bindings.  For example,

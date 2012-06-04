@@ -27,6 +27,7 @@
 open Typing_unify
 
 exception Unbound_value of string * Syntax.parser_meta_t
+exception Incorrect_args of string * Syntax.parser_meta_t
 
 exception Duplicate_argument_inner of string
 exception Duplicate_argument of string * Syntax.parser_meta_t
@@ -65,6 +66,10 @@ type expr_t =
   | LetRec of bind_t * (bind_t list) * aexpr_t * aexpr_t (* Let Rec expression *)
   | External of bind_t * string * aexpr_t                (* External function definition *)
   | Apply of aexpr_t * (aexpr_t list)                    (* Function application *)
+  | ArrayMake of aexpr_t * aexpr_t                       (* Array constructor *)
+  | ArrayGet of aexpr_t * aexpr_t                        (* Array lookup *)
+  | ArraySet of aexpr_t * aexpr_t * aexpr_t              (* Array mutate *)
+
 
 and aexpr_t = {
   expr          : expr_t;                (* Expression *)
@@ -153,11 +158,39 @@ let rec annotate (env : Type.t SMap.t) (parsed_expr : Syntax.t) : aexpr_t =
       inferred_type = Type.make_type_var ();
       parser_info
     }
-  | Syntax.Apply (a, args) -> {
-      expr          = Apply (annotate env a, List.map (annotate env) args);
+  | Syntax.Apply (a, args) ->
+      (* Special case: [array_make] is a predefined library function.  It results in a call
+       * to [zml_array_create], which relies on reference/value type tracking in order to
+       * allocate an array of the correct type.  Consequently it is not appropriate to
+       * define this function via the standard "external" interface. *)
+      begin match a.Syntax.expr with
+      | Syntax.Var "array_make" ->
+          begin match args with
+          | [len; value] -> {
+              expr          = ArrayMake (annotate env len, annotate env value);
+              inferred_type = Type.make_type_var ();
+              parser_info
+            }
+          | _ ->
+              raise (Incorrect_args ("array_make", parser_info))
+          end
+      | _ -> {
+          expr          = Apply (annotate env a, List.map (annotate env) args);
+          inferred_type = Type.make_type_var ();
+          parser_info
+        }
+      end
+  | Syntax.ArrayGet (a, index) -> {
+      expr          = ArrayGet (annotate env a, annotate env index);
       inferred_type = Type.make_type_var ();
       parser_info
     }
+  | Syntax.ArraySet (a, index, value) -> {
+      expr          = ArraySet (annotate env a, annotate env index, annotate env value);
+      inferred_type = Type.Unit;
+      parser_info
+    }
+
 
 
 (* Annotate a let-binding with type variables. *) 
@@ -339,6 +372,55 @@ let rec compute_constraints (acc : constraint_t list) (aexprs : aexpr_t list) : 
         error_info = fun_expr.parser_info
       } in
       compute_constraints (arrow_constr :: acc) ((fun_expr :: args_exprs ) @ tail)
+  | {expr = ArrayMake (len, value); _} as ae :: tail ->
+      (* The length must be an int *)
+      let len_constr = {
+        left_type  = len.inferred_type;
+        right_type = Type.Int;
+        error_info = len.parser_info
+      } in
+      (* The array must contain elements of the proper type *)
+      let container_constr = {
+        left_type  = ae.inferred_type;
+        right_type = Type.Array value.inferred_type;
+        error_info = ae.parser_info
+      } in
+      compute_constraints (len_constr :: container_constr :: acc) (len :: value :: tail)
+  | {expr = ArrayGet (arr, index); _} as ae :: tail ->
+      (* The index must be an int *)
+      let index_constr = {
+        left_type  = index.inferred_type;
+        right_type = Type.Int;
+        error_info = index.parser_info
+      } in
+      (* The array must contain elements of the proper type *)
+      let container_constr = {
+        left_type  = arr.inferred_type;
+        right_type = Type.Array ae.inferred_type;
+        error_info = arr.parser_info
+      } in
+      compute_constraints (index_constr :: container_constr :: acc) (arr :: index :: tail)
+  | {expr = ArraySet (arr, index, value); _} as ae :: tail ->
+      (* The index must be an int *)
+      let index_constr = {
+        left_type  = index.inferred_type;
+        right_type = Type.Int;
+        error_info = index.parser_info
+      } in
+      (* The array must contain elements of the proper type *)
+      let container_constr = {
+        left_type  = arr.inferred_type;
+        right_type = Type.Array value.inferred_type;
+        error_info = arr.parser_info
+      } in
+      (* The assignment operation must return unit *)
+      let op_constr = {
+        left_type  = ae.inferred_type;
+        right_type = Type.Unit;
+        error_info = ae.parser_info
+      } in
+      compute_constraints (index_constr :: container_constr :: op_constr :: acc)
+        (arr :: index :: value :: tail)
 
 
 let print_constraints (constraints : constraint_t list) =
@@ -396,6 +478,10 @@ let rec apply_substs (substs : Typing_unify.subst_t list) (aexpr : aexpr_t) =
     }
 
 	| {expr = Apply (a, b_list); _} -> {aexpr with expr = Apply (sub a, List.map sub b_list)}
+  
+  | {expr = ArrayMake (len, value); _}     -> {aexpr with expr = ArrayMake (sub len, sub value)}
+  | {expr = ArrayGet (a, index); _}        -> {aexpr with expr = ArrayGet (sub a, sub index)}
+  | {expr = ArraySet (a, index, value); _} -> {aexpr with expr = ArraySet (sub a, sub index, sub value)}
 
 
 

@@ -67,6 +67,8 @@ let typed_expr_sym expr type_annot = typed_expr expr type_annot (symbol_range ()
 %token GT
 %token SEMI
 %token COLON
+%token DOT
+%token LARROW
 %token <string> IDENT
 %token <string> STRING_LITERAL
 %token EXTERNAL
@@ -86,6 +88,7 @@ let typed_expr_sym expr type_annot = typed_expr expr type_annot (symbol_range ()
 %nonassoc LET
 %nonassoc THEN
 %nonassoc ELSE
+%nonassoc LARROW
 %left     EQ LT GT NEQ LEQ GEQ
 %left     PLUS MINUS
 %left     STAR SLASH MOD
@@ -151,6 +154,8 @@ expr:
     { untyped_expr_sym (Less ($1, $3)) }
   | expr GT expr
     { untyped_expr_sym (Greater ($1, $3)) }
+  | simple_expr DOT LPAREN seq_expr RPAREN LARROW expr
+    { untyped_expr_sym (ArraySet ($1, $4, $7)) }
   | error
     { let spos = Parsing.symbol_start_pos () in
       let epos = Parsing.symbol_end_pos () in
@@ -172,6 +177,8 @@ simple_expr:
     { untyped_expr_sym (Int ($1)) }
   | IDENT
     { untyped_expr_sym (Var ($1)) }
+  | simple_expr DOT LPAREN seq_expr RPAREN
+    { untyped_expr_sym (ArrayGet ($1, $4)) }
         
 
 simple_expr_list:

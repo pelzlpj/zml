@@ -38,6 +38,7 @@ type t =
   | Int                    (** integer type *)
   | Var of tvar_t          (** a type variable *)
   | Arrow of t * t         (** an "arrow", i.e. type of a unary lambda *)
+  | Array of t             (** an array containing an arbitrary type *)
 
 
 let typevar_count = ref 0
@@ -68,10 +69,12 @@ let rec string_of_type typ =
   | Int          -> "int"
   | Var i        -> string_of_typevar_index i
   | Arrow ((Arrow _ as a), b) ->
-     (* This case occurs in a higher-order function *)
-     Printf.sprintf "(%s) -> %s" (string_of_type a) (string_of_type b)
+      (* This case occurs in a higher-order function *)
+      Printf.sprintf "(%s) -> %s" (string_of_type a) (string_of_type b)
   | Arrow (a, b) ->
-     Printf.sprintf "%s -> %s" (string_of_type a) (string_of_type b)
+      Printf.sprintf "%s -> %s" (string_of_type a) (string_of_type b)
+  | Array a ->
+      Printf.sprintf "%s array" (string_of_type a)
 
 
 type rename_context_t = {
@@ -107,5 +110,8 @@ let rec local_rename_typevars (ctx : rename_context_t) (x : t) =
       let (ctx, a) = local_rename_typevars ctx a in
       let (ctx, b) = local_rename_typevars ctx b in
       (ctx, Arrow (a, b))
+  | Array a ->
+      let (ctx, a) = local_rename_typevars ctx a in
+      (ctx, Array a)
 
 

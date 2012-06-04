@@ -79,6 +79,7 @@ type t =
   | ArrayAlloc of var_t                             (* Construct a new array (size) *)
   | ArrayInitOne of var_t * var_t * var_t           (* Store a ref or value in an array, setting the
                                                         storage type to match (arr, index, val) *)
+  | ArrayMake of var_t * var_t                      (* Construct a new array (length, value) *)
   | ArraySet of var_t * var_t * var_t               (* Store a ref or value in an array (arr, index, val) *)
   | ArrayGetVal of var_t * var_t                    (* Get a value from an array (arr, index) *)
   | ArrayGetRef of var_t * var_t                    (* Get a reference from an array (arr, index) *)
@@ -116,7 +117,7 @@ let storage_of_type tp =
   match tp with
   | Type.Unit | Type.Bool _ | Type.Int _ ->
       Value
-  | Type.Arrow _ ->
+  | Type.Arrow _ | Type.Array _ ->
       (* Any first-class treatment of a function results in a closure reference. *)
       Ref
   | Type.Var _ ->
@@ -189,6 +190,8 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : stri
       sprintf "array_alloc(%s)" (SPVar.to_string a)
   | ArrayInitOne (a, b, c) ->
       sprintf "array_init_one(%s, %s, %s)" (SPVar.to_string a) (SPVar.to_string b) (SPVar.to_string c)
+  | ArrayMake (a, b) ->
+      sprintf "array_make(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
   | ArraySet (a, b, c) ->
       sprintf "array_set(%s, %s, %s)" (SPVar.to_string a) (SPVar.to_string b) (SPVar.to_string c)
   | ArrayGetVal (a, b) ->
@@ -274,7 +277,12 @@ let rec free_variables ?(acc=VSet.empty) (bound_vars : VSet.t) (expr : Normal.t)
       VSet.union g_body_free g_scope_free
   | Normal.Apply (g, g_args) ->
       accum_free (g :: g_args)
-
+  | Normal.ArrayMake (len, v) ->
+      accum_free [len; v]
+  | Normal.ArrayGet (a, i) ->
+      accum_free [a; i]
+  | Normal.ArraySet (a, i, v) ->
+      accum_free [a; i; v]
 
 
 (* Construct a closure definition.  The code which defines the function is transformed into code which
@@ -400,7 +408,7 @@ let make_partial_application
  * simply calling it with a full argument list. *)
 let rec is_first_class f_id (expr : Normal.t) : bool =
   match expr with
-  | Normal.Unit | Normal.Int _ | Normal.BinaryOp _ | Normal.UnaryOp _ ->
+  | Normal.Unit | Normal.Int _ | Normal.BinaryOp _ | Normal.UnaryOp _ | Normal.ArrayGet (_, _) ->
       false
   | Normal.Conditional (cond, a, b, e1, e2) ->
       (is_first_class f_id e1) || (is_first_class f_id e2)
@@ -418,6 +426,8 @@ let rec is_first_class f_id (expr : Normal.t) : bool =
        * argument, but that optimization would require a lot of extra analysis to figure out the
        * contexts in which the higher-order function is invoked.) *)
       List.mem f_id g_args
+  | Normal.ArrayMake (_, v) | Normal.ArraySet (_, _, v) ->
+      v = f_id
 
 
 type call_t = Known | Closure of var_t
@@ -511,6 +521,22 @@ let rec extract_functions_aux
           (* "Unknown" function application, i.e. call-by-function-pointer. *)
           make_closure_application (ref_var f_id) sp_f_args
         end
+  | Normal.ArrayMake (len, value) ->
+      ArrayMake (value_var len, infer_storage value)
+  | Normal.ArrayGet (arr, index) ->
+      begin match arr.VarID.tp with
+      | Type.Array contained_type ->
+          begin match storage_of_type contained_type with
+          | Ref ->
+              ArrayGetRef (ref_var arr, value_var index)
+          | Value ->
+              ArrayGetVal (ref_var arr, value_var index)
+          end
+      | _ ->
+          assert false
+      end
+  | Normal.ArraySet (arr, index, value) ->
+      ArraySet (ref_var arr, value_var index, infer_storage value)
 
 
 (* Rewrite a normalized expression tree as a list of function definitions and an entry point. *)

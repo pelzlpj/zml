@@ -97,6 +97,10 @@ rule token = parse
     { SEMI }
   | "->"
     { TYPE_ARROW }
+  | "<-"
+    { LARROW }
+  | '.'
+    { DOT }
   | lower (lower|upper|digit|'_')*
     { let s = Lexing.lexeme lexbuf in
       try Hashtbl.find keyword_table s

@@ -48,6 +48,7 @@ type t =
   | ArrayAlloc of ValID.t                       (* Construct a new array (size) *)
   | ArrayInitOne of RefID.t * ValID.t * sp_var_t(* Store a ref or value in an array, setting the
                                                     storage type to match (arr, index, val) *)
+  | ArrayMake of ValID.t * sp_var_t             (* Construct a new array (length, value) *)
   | ArraySet of RefID.t * ValID.t * sp_var_t    (* Store a ref or value in an array (arr, index, ref) *)
   | ArrayGetVal of RefID.t * ValID.t            (* Get a value from an array (arr, index) *)
   | ArrayGetRef of RefID.t * ValID.t            (* Get a reference from an array (arr, index) *)
@@ -92,6 +93,7 @@ let rec drop_ids (id_expr : RefTracking.t) : t =
   | RefTracking.ApplyUnknown (f, args)           -> ApplyUnknown (f, args)
   | RefTracking.ArrayAlloc size                  -> ArrayAlloc size
   | RefTracking.ArrayInitOne (arr, index, v)     -> ArrayInitOne (arr, index, v)
+  | RefTracking.ArrayMake (len, v)               -> ArrayMake (len, v)
   | RefTracking.ArraySet (arr, index, v)         -> ArraySet (arr, index, v)
   | RefTracking.ArrayGetVal (arr, index)         -> ArrayGetVal (arr, index)
   | RefTracking.ArrayGetRef (arr, index)         -> ArrayGetRef (arr, index)

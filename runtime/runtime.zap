@@ -214,6 +214,11 @@ store_value:
    add block 1 -> sp
    storew __heap_start sp size
 
+	 ; reference types need to be dereferenced before being stored in the array
+	 jz is_ref ?loop_init
+   call_2s __zml_deref_root init -> init
+
+loop_init:
    push block                                               ; save a copy of array reference
    add block 2 -> block                                     ; advance to element 0
 init_next:
@@ -261,7 +266,7 @@ init_refmap:
 .FUNCT zml_array_get_ref, arr, index
    ; Retrieve the element stored in the array at the given index, treating it as a reference type.
    ; The value returned is registered as a new root reference; the caller takes responsibility for
-   ; releasing this  value using zml_ref_release.
+   ; releasing this value using zml_ref_release.
    ;
    ; param arr: root reference which identifies an array
    ; param index: array value to retrieve; 0 <= index < array size

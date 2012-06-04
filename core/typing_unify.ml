@@ -47,6 +47,7 @@ let rec occurs (tvar : Type.tvar_t) (typ : Type.t) =
   | Type.Int          -> false
   | Type.Var a        -> tvar = a
   | Type.Arrow (a, b) -> (occurs tvar a) || (occurs tvar b)
+  | Type.Array a      -> occurs tvar a
 
 
 (* Substitutes [repl] for all occurrences of [orig] within a type definition *)
@@ -57,7 +58,9 @@ let rec substitute (orig : Type.tvar_t) (repl : Type.t) (typ : Type.t) : Type.t 
   | Type.Var a ->
       if a = orig then repl else typ
   | Type.Arrow (a, b) ->
-     Type.Arrow (substitute orig repl a, substitute orig repl b)
+      Type.Arrow (substitute orig repl a, substitute orig repl b)
+  | Type.Array a ->
+      Type.Array (substitute orig repl a)
 
 
 (* Apply a list of substitutions to a type, in order. *)
@@ -83,7 +86,7 @@ let rec unify_one (constr : constraint_t) : subst_t list =
   | (y, (Type.Bool as x))
   | (y, (Type.Int as x)) ->
       begin match y with
-      | Type.Unit | Type.Bool | Type.Int | Type.Arrow _ ->
+      | Type.Unit | Type.Bool | Type.Int | Type.Arrow _ | Type.Array _ ->
           if constr.left_type = constr.right_type then [] else raise (Unification_failure constr)
       | Type.Var a ->
           [{type_var = a; subst = x}]
@@ -91,6 +94,11 @@ let rec unify_one (constr : constraint_t) : subst_t list =
   | (Type.Var a, (Type.Var b as x)) ->
       if a = b then [] else [{type_var = a; subst = x}]
   | (Type.Var a, (Type.Arrow (b, c) as x)) | ((Type.Arrow (b, c) as x), Type.Var a) ->
+      if occurs a x then
+        raise (Unification_failure constr)
+      else
+        [{type_var = a; subst = x}]
+  | (Type.Var a, (Type.Array b as x)) | ((Type.Array b as x), Type.Var a) ->
       if occurs a x then
         raise (Unification_failure constr)
       else
@@ -110,6 +118,16 @@ let rec unify_one (constr : constraint_t) : subst_t list =
          * a very incomplete type like 'a -> 'b -> 'c -> ... *)
         raise (Unification_failure constr)
       end
+  | (Type.Array a, Type.Array b) ->
+      begin try
+        unify [{left_type = a; right_type = b; error_info = constr.error_info}]
+      with Unification_failure _ ->
+        (* As above, trying to provide a more meaningful error message. *)
+        raise (Unification_failure constr)
+      end
+  | (Type.Arrow (a, b), Type.Array c) | (Type.Array c, Type.Arrow (a, b)) ->
+      raise (Unification_failure constr)
+
 
 (* Unify a list of constraints.  The resulting list has the property
  * that type variables appearing on the "left-hand side" of the substitution

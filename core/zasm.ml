@@ -270,6 +270,17 @@ let rec compile_virtual_aux
         Reg (RVMap.find v state.reg_of_var);
         is_ref],
       result_reg)])
+  | IR.ArrayMake (len, v) ->
+      let is_ref =
+        match v with
+        | RefTracking.Value _ -> 0
+        | RefTracking.Ref _   -> 1
+      in
+      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_create"), [
+        Reg (RVMap.find (lift_value len) state.reg_of_var);
+        Reg (RVMap.find v state.reg_of_var);
+        Const (ConstNum is_ref)],
+      result_reg)])
   | IR.ArraySet (arr, index, v) ->
       let routine =
         match v with
