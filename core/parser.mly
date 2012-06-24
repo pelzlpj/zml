@@ -40,6 +40,20 @@ let untyped_expr_rhs n expr = untyped_expr expr (rhs_range n)
 
 let typed_expr_sym expr type_annot = typed_expr expr type_annot (symbol_range ())
 
+(* When the user provides type expressions, we use the following hash table to assign
+ * a unique integer to every unique type variable identifier. *)
+let tvar_map   = Hashtbl.create 50
+let tvar_count = ref 0
+
+let make_tvar ident =
+  try
+    Hashtbl.find tvar_map ident
+  with Not_found ->
+    let tvar = !tvar_count in
+    let () = incr tvar_count in
+    let () = Hashtbl.add tvar_map ident tvar in
+    tvar
+
 %}
 
 
@@ -76,6 +90,8 @@ let typed_expr_sym expr type_annot = typed_expr expr type_annot (symbol_range ()
 %token TYPE_BOOL
 %token TYPE_INT
 %token TYPE_ARROW
+%token TYPE_ARRAY
+%token QUOTE
 %token EOF
 
 
@@ -95,7 +111,7 @@ let typed_expr_sym expr type_annot = typed_expr expr type_annot (symbol_range ()
 %nonassoc prec_unary_minus
 
 /* The starting tokens of simple_expr have highest precedence. */
-%nonassoc LPAREN BOOL INT IDENT
+%nonassoc LPAREN BOOL INT IDENT TYPE_ARRAY
 
 
 /* The entry point must be an expression of the given type. */
@@ -122,7 +138,7 @@ expr:
     { untyped_expr_sym (Let ($2, List.rev $3, $5, $7)) }
   | LET REC IDENT ident_list EQ expr IN seq_expr
     { untyped_expr_sym (LetRec ($3, List.rev $4, $6, $8)) }
-  | EXTERNAL IDENT COLON type_signature EQ STRING_LITERAL IN seq_expr
+  | EXTERNAL IDENT COLON type_expr EQ STRING_LITERAL IN seq_expr
     { typed_expr_sym (External ($2, $4, $6, $8)) $4 }
   | IF expr THEN expr ELSE expr
     { untyped_expr_sym (If ($2, $4, $6)) }
@@ -169,6 +185,8 @@ expr:
 simple_expr:
   | LPAREN seq_expr RPAREN
     { $2 }
+  | LPAREN seq_expr COLON type_expr RPAREN
+    { typed_expr_sym ($2).expr $4 }
   | LPAREN RPAREN
     { untyped_expr_sym Unit }
   | BOOL
@@ -195,17 +213,20 @@ ident_list:
     { [] }
 
 
-/* FIXME: this is just barely enough to get external functions working.
- * Much more work is required for parsing full-blown type signatures. */
-type_signature:
-  | type_signature TYPE_ARROW type_signature
+type_expr:
+  | QUOTE IDENT
+    { Type.Var (make_tvar $2) }
+  | LPAREN type_expr RPAREN
+    { $2 }
+  | type_expr TYPE_ARROW type_expr
     { Type.Arrow ($1, $3) }
   | TYPE_UNIT
     { Type.Unit }
   | TYPE_BOOL
-    { Type.Bool }
+    { Type.Bool}
   | TYPE_INT
     { Type.Int }
-
+  | type_expr TYPE_ARRAY
+    { Type.Array $1 }
 
 

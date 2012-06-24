@@ -43,6 +43,7 @@
     "unit"     , TYPE_UNIT;
     "bool"     , TYPE_BOOL;
     "int"      , TYPE_INT;
+    "array"    , TYPE_ARRAY
   ]
 
   let keyword_table = create_hashtable keyword_tokens
@@ -101,6 +102,8 @@ rule token = parse
     { LARROW }
   | '.'
     { DOT }
+  | '\''
+    { QUOTE }
   | lower (lower|upper|digit|'_')*
     { let s = Lexing.lexeme lexbuf in
       try Hashtbl.find keyword_table s

@@ -43,6 +43,13 @@ let smap_find x m =
   with Not_found -> None
 
 
+module Int = struct
+  type t = int
+  let compare e1 e2 = if e1 < e2 then -1 else if e1 > e2 then 1 else 0
+end
+module IMap = Map.Make(Int)
+
+
 type expr_t =
   | Unit                                                 (* Unit literal *)
   | Bool of bool                                         (* Boolean literal *)
@@ -81,6 +88,97 @@ and bind_t = {
   bind_name : string;
   bind_type : Type.t
 }
+
+
+(* Assign program-unique identifiers to the type variables in a single type expression. *)
+let rename_single_constraint_typevars (type_expr : Type.t) : Type.t =
+  let rec aux rename_context te =
+    match te with
+    | Type.Unit | Type.Bool | Type.Int ->
+        (rename_context, te)
+    | Type.Arrow (a, b) ->
+        let a_context, a'  = aux rename_context a in
+        let ab_context, b' = aux a_context b in
+        (ab_context, Type.Arrow (a', b'))
+    | Type.Array a ->
+        let context, a' = aux rename_context a in
+        (context, Type.Array a')
+    | Type.Var a ->
+        begin try
+          (rename_context, IMap.find a rename_context)
+        with Not_found ->
+          let var_a = Type.make_type_var () in
+          (IMap.add a var_a rename_context, var_a)
+        end
+  in
+  snd (aux IMap.empty type_expr)
+
+
+(* Recursively examine the AST.  If the AST contains user-defined type constraints, rewrite the
+ * constraint equations using program-unique type variable identifiers.  (This is necessary because
+ * a type variable like ['a] has a scope which is local to a subexpression, and it's incorrect to
+ * assume that ['a] is the *same* type variable across the entire program.  The type unification
+ * algorithm can collapse type variables when appropriate.) *)
+let rec rename_constraint_typevars (parsed_expr : Syntax.t) : Syntax.t =
+  let expr  = parsed_expr.Syntax.expr in
+  let annot = parsed_expr.Syntax.parser_info.Syntax.type_annot in
+  let renamed_expr =
+    match expr with
+    | Syntax.Unit | Syntax.Bool _ | Syntax.Int _ | Syntax.Var _ ->
+        expr
+    | Syntax.Eq (a, b) ->
+        Syntax.Eq (rename_constraint_typevars a, rename_constraint_typevars b)
+    | Syntax.Neq (a, b) ->
+        Syntax.Neq (rename_constraint_typevars a, rename_constraint_typevars b)
+    | Syntax.Leq (a, b) ->
+        Syntax.Leq (rename_constraint_typevars a, rename_constraint_typevars b)
+    | Syntax.Geq (a, b) ->
+        Syntax.Geq (rename_constraint_typevars a, rename_constraint_typevars b)
+    | Syntax.Less (a, b) ->
+        Syntax.Less (rename_constraint_typevars a, rename_constraint_typevars b)
+    | Syntax.Greater (a, b) ->
+        Syntax.Greater (rename_constraint_typevars a, rename_constraint_typevars b)
+    | Syntax.Add (a, b) ->
+        Syntax.Add (rename_constraint_typevars a, rename_constraint_typevars b)
+    | Syntax.Sub (a, b) ->
+        Syntax.Sub (rename_constraint_typevars a, rename_constraint_typevars b)
+    | Syntax.Mul (a, b) ->
+        Syntax.Mul (rename_constraint_typevars a, rename_constraint_typevars b)
+    | Syntax.Div (a, b) ->
+        Syntax.Div (rename_constraint_typevars a, rename_constraint_typevars b)
+    | Syntax.Mod (a, b) ->
+        Syntax.Mod (rename_constraint_typevars a, rename_constraint_typevars b)
+    | Syntax.Not a ->
+        Syntax.Not (rename_constraint_typevars a)
+    | Syntax.Neg a ->
+        Syntax.Neg (rename_constraint_typevars a)
+    | Syntax.If (a, b, c) ->
+        Syntax.If (rename_constraint_typevars a, rename_constraint_typevars b,
+          rename_constraint_typevars c)
+    | Syntax.Let (a, b, eq_expr, in_expr) ->
+        Syntax.Let (a, b, rename_constraint_typevars eq_expr, rename_constraint_typevars in_expr)
+    | Syntax.LetRec (a, b, eq_expr, in_expr) ->
+        Syntax.LetRec (a, b, rename_constraint_typevars eq_expr, rename_constraint_typevars in_expr)
+    | Syntax.External (a, tp, b, in_expr) ->
+        Syntax.External (a, rename_single_constraint_typevars tp, b, rename_constraint_typevars in_expr)
+    | Syntax.Apply (a, b_list) ->
+        Syntax.Apply (rename_constraint_typevars a, List.map rename_constraint_typevars b_list)
+    | Syntax.ArrayGet (a, b) ->
+        Syntax.ArrayGet (rename_constraint_typevars a, rename_constraint_typevars b)
+    | Syntax.ArraySet (a, b, c) ->
+        Syntax.ArraySet (rename_constraint_typevars a, rename_constraint_typevars b,
+          rename_constraint_typevars c)
+  in 
+  let renamed_annot =
+    match annot with
+    | None ->
+        annot
+    | Some te ->
+        Some (rename_single_constraint_typevars te)
+  in {
+    Syntax.expr        = renamed_expr;
+    Syntax.parser_info = { parsed_expr.Syntax.parser_info with Syntax.type_annot = renamed_annot }
+  }
 
 
 (* Recursively annotate all subexpressions with types.
@@ -162,13 +260,17 @@ let rec annotate (env : Type.t SMap.t) (parsed_expr : Syntax.t) : aexpr_t =
       (* Special case: [array_make] is a predefined library function.  It results in a call
        * to [zml_array_create], which relies on reference/value type tracking in order to
        * allocate an array of the correct type.  Consequently it is not appropriate to
-       * define this function via the standard "external" interface. *)
+       * define this function via the standard "external" interface.
+       *
+       * FIXME: this isn't sufficient, because [array_make] could just as easily be treated
+       * as first-class and called via unknown-function application. *)
       begin match a.Syntax.expr with
       | Syntax.Var "array_make" ->
           begin match args with
-          | [len; value] -> {
-              expr          = ArrayMake (annotate env len, annotate env value);
-              inferred_type = Type.make_type_var ();
+          | [len; value] -> 
+              let value_aexpr = annotate env value in {
+              expr          = ArrayMake (annotate env len, value_aexpr);
+              inferred_type = Type.Array (value_aexpr.inferred_type);
               parser_info
             }
           | _ ->
@@ -484,13 +586,13 @@ let rec apply_substs (substs : Typing_unify.subst_t list) (aexpr : aexpr_t) =
   | {expr = ArraySet (a, index, value); _} -> {aexpr with expr = ArraySet (sub a, sub index, sub value)}
 
 
-
 (* Determine the types of all expressions using a Damas-Milner algorithm. *)
 let infer (parsed_expr : Syntax.t) : aexpr_t =
   let () = Type.reset_type_vars () in
-  let annotated_ast = annotate SMap.empty parsed_expr in
+  let type_renamed_ast = rename_constraint_typevars parsed_expr in
+  let annotated_ast    = annotate SMap.empty type_renamed_ast in
   let type_constraints = compute_constraints [] [annotated_ast] in
-  let substitutions = Typing_unify.unify type_constraints in
+  let substitutions    = Typing_unify.unify type_constraints in
   apply_substs substitutions annotated_ast
 
 
