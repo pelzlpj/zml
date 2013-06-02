@@ -19,64 +19,29 @@
  *  <pelzlpj@gmail.com>.
  ******************************************************************************)
 
-
-(* Implementation of type inference, roughly following Algorithm W of
- * Damas and Milner. *)
-
-
-open Typing_unify
-
-exception Unbound_value of string * Syntax.parser_meta_t
-exception Incorrect_args of string * Syntax.parser_meta_t
-
-exception Duplicate_argument_inner of string
-exception Duplicate_argument of string * Syntax.parser_meta_t
+(* Implementation of type inference.  This is a straightforward implementation
+ * of Algorithm W, extended as appropriate for the ZML syntax. *)
 
 
-module SMap = Map.Make(String)
-module SSet = Set.Make(String)
-
-
-(* Exceptionless variant of Map.find. *)
-let smap_find x m =
-  try Some (SMap.find x m)
-  with Not_found -> None
-
-
-module Int = struct
-  type t = int
-  let compare e1 e2 = if e1 < e2 then -1 else if e1 > e2 then 1 else 0
-end
-module IMap = Map.Make(Int)
+module TVSet = Type.TVSet
+module TVMap = Type.TVMap
 
 
 type expr_t =
   | Unit                                                 (* Unit literal *)
   | Bool of bool                                         (* Boolean literal *)
   | Int of int                                           (* Integer literal *)
-  | Eq of aexpr_t * aexpr_t                              (* Polymorphic equality *)
-  | Neq of aexpr_t * aexpr_t                             (* Polymorphic inequality *)
-  | Leq of aexpr_t * aexpr_t                             (* Polymorphic "less than or equal to" *)
-  | Geq of aexpr_t * aexpr_t                             (* Polymorphic "greater than or equal to" *)
-  | Less of aexpr_t * aexpr_t                            (* Polymorphic "less than" *)
-  | Greater of aexpr_t * aexpr_t                         (* Polymorphic "greater than" *)
-  | Add of aexpr_t * aexpr_t                             (* Integer addition *)
-  | Sub of aexpr_t * aexpr_t                             (* Integer subtraction *)
-  | Mul of aexpr_t * aexpr_t                             (* Integer multiplication *)
-  | Div of aexpr_t * aexpr_t                             (* Integer division *)
-  | Mod of aexpr_t * aexpr_t                             (* Integer modulus *)
-  | Not of aexpr_t                                       (* Boolean negation *)
-  | Neg of aexpr_t                                       (* Integer negation *)
-  | If of aexpr_t * aexpr_t * aexpr_t                    (* Conditional expression *)
   | Var of string                                        (* Bound variable *)
-  | Let of bind_t * (bind_t list) * aexpr_t * aexpr_t    (* Let expression *)
-  | LetRec of bind_t * (bind_t list) * aexpr_t * aexpr_t (* Let Rec expression *)
+  | If of aexpr_t * aexpr_t * aexpr_t                    (* Conditional expression *)
+  | Apply of func_t * aexpr_t                            (* Single-argument function application *)
+  | Lambda of bind_t * aexpr_t                           (* Unary lambda definition *)
+  | Let of bind_t * aexpr_t * aexpr_t                    (* Let expression *)
+  | LetRec of bind_t * aexpr_t * aexpr_t                 (* Recursive let expression *)
   | External of bind_t * string * aexpr_t                (* External function definition *)
-  | Apply of aexpr_t * (aexpr_t list)                    (* Function application *)
-  | ArrayMake of aexpr_t * aexpr_t                       (* Array constructor *)
-  | ArrayGet of aexpr_t * aexpr_t                        (* Array lookup *)
-  | ArraySet of aexpr_t * aexpr_t * aexpr_t              (* Array mutate *)
 
+and func_t =
+  | FuncExpr of aexpr_t
+  | BuiltinFunc of Syntax.builtin_func_t
 
 and aexpr_t = {
   expr          : expr_t;                (* Expression *)
@@ -90,509 +55,498 @@ and bind_t = {
 }
 
 
-(* Assign program-unique identifiers to the type variables in a single type expression. *)
-let rename_single_constraint_typevars (type_expr : Type.t) : Type.t =
-  let rec aux rename_context te =
-    match te with
+let rec string_of_builtin (func : Syntax.builtin_func_t) : string =
+  match func with
+    | Syntax.Eq          -> "(=)"
+    | Syntax.Neq         -> "(<>)"
+    | Syntax.Leq         -> "(<=)"
+    | Syntax.Geq         -> "(>=)"
+    | Syntax.Less        -> "(<)"
+    | Syntax.Greater     -> "(>)"
+    | Syntax.Add         -> "(+)"
+    | Syntax.Sub         -> "(-)"
+    | Syntax.Mul         -> "(*)"
+    | Syntax.Div         -> "(/)"
+    | Syntax.Mod         -> "(mod)"
+    | Syntax.Not         -> "not"
+    | Syntax.Neg         -> "neg"
+  (*  | ArrayMake *)
+    | Syntax.ArrayGet    -> "array_get"
+    | Syntax.ArraySet    -> "array_set"
+
+let rec string_of_typetree (ast : aexpr_t) : string =
+  let expr_s = 
+    match ast.expr with
+    | Unit   -> "()"
+    | Bool a -> if a then "true" else "false"
+    | Int a  -> string_of_int a
+    | Var v  -> v
+    | If (cond, true_expr, false_expr) ->
+        Printf.sprintf "if %s\nthen %s\nelse %s"
+          (string_of_typetree cond)
+          (string_of_typetree true_expr)
+          (string_of_typetree false_expr)
+    | Apply (FuncExpr func, arg) ->
+        Printf.sprintf "apply(%s, %s)"
+          (string_of_typetree func) (string_of_typetree arg)
+    | Apply (BuiltinFunc func, arg) ->
+        Printf.sprintf "apply(%s, %s)"
+          (string_of_builtin func) (string_of_typetree arg)
+    | Lambda (binding, body) ->
+        Printf.sprintf "(fun (%s : %s) -> %s)"
+          binding.bind_name (Type.string_of_type binding.bind_type)
+          (string_of_typetree body)
+    | Let (binding, body, scope) ->
+        Printf.sprintf "let (%s : %s) =\n%s in\n %s"
+          binding.bind_name (Type.string_of_type binding.bind_type)
+          (string_of_typetree body) (string_of_typetree scope)
+    | LetRec (binding, body, scope) ->
+        Printf.sprintf "let rec (%s : %s) =\n%s in\n %s"
+          binding.bind_name (Type.string_of_type binding.bind_type)
+          (string_of_typetree body) (string_of_typetree scope)
+    | External (binding, asm_name, scope) ->
+        Printf.sprintf "external %s : %s = %s in\n %s"
+          binding.bind_name (Type.string_of_type binding.bind_type)
+          asm_name (string_of_typetree scope)
+  in
+  Printf.sprintf "%s : %s" expr_s (Type.string_of_type ast.inferred_type)
+
+
+
+
+module type PROG_VAR = sig
+  include Set.OrderedType
+
+  val of_string : string -> t
+  val to_string : t -> string
+end
+
+
+module ProgVar : PROG_VAR = struct
+  type t = string
+
+  let compare = String.compare
+  let of_string s = s
+  let to_string s = s
+end
+module PVMap = Map.Make(ProgVar)
+
+
+type type_scheme_t = Type.type_scheme_t
+type type_env_t = type_scheme_t PVMap.t
+
+type subst_t = Type.t TVMap.t
+let identity_subst = TVMap.empty
+
+
+module BuiltinEnv = struct
+  (* Typing of polymorphic binary comparison operators:
+   *    val __lambda_poly_comp : 'a -> 'a -> bool *)
+  let poly_comp = ProgVar.of_string "__lambda_poly_comp"
+
+  (* Typing of binary comparison operators for integer arguments:
+   *    val __lambda_int_comp : int -> int -> bool *)
+  let int_comp = ProgVar.of_string "__lambda_int_comp"
+
+  (* Typing of binary integer arithmetic operators:
+   *    val __lambda_int_op : int -> int -> int *)
+  let int_op = ProgVar.of_string "__lambda_int_op"
+
+  (* Typing of unary boolean operators:
+   *    val __lambda_unary_bool_op : bool -> bool *)
+  let unary_bool_op = ProgVar.of_string "__lambda_unary_bool_op"
+
+  (* Typing of unary integer operators:
+   *    val __lambda_unary_int_op : int -> int *)
+  let unary_int_op = ProgVar.of_string "__lambda_unary_int_op"
+
+  (* Typing of conditional expressions:
+   *    val __lambda_cond : bool -> 'a -> 'a -> 'a *)
+  let cond = ProgVar.of_string "__lambda_cond"
+
+  (* Typing of built-in array_get:
+   *    val __lambda_array_get : 'a array -> int -> 'a *)
+  let array_get = ProgVar.of_string "__lambda_array_get"
+
+  (* Typing of built-in array_set:
+   *    val __lambda_array_set : 'a array -> int -> 'a -> unit *)
+  let array_set = ProgVar.of_string "__lambda_array_set"
+
+  let env = 
+    let tv = TypeVar.fresh () in
+    List.fold_left
+      (fun acc (pv, ts) -> PVMap.add pv ts acc)
+      PVMap.empty
+      [ (poly_comp, 
+          Type.ForAll (TVSet.singleton tv, Type.Arrow (Type.Var tv, Type.Arrow (Type.Var tv, Type.Bool))));
+        (int_comp,
+          Type.ForAll (TVSet.empty, Type.Arrow (Type.Int, Type.Arrow (Type.Int, Type.Bool))));
+        (int_op,
+          Type.ForAll (TVSet.empty, Type.Arrow (Type.Int, Type.Arrow (Type.Int, Type.Int))));
+        (unary_bool_op,
+          Type.ForAll (TVSet.empty, Type.Arrow (Type.Bool, Type.Bool)));
+        (unary_int_op,
+          Type.ForAll (TVSet.empty, Type.Arrow (Type.Int, Type.Int)));
+        (cond,
+          Type.ForAll (TVSet.singleton tv, Type.Arrow (Type.Bool,
+            Type.Arrow (Type.Var tv, Type.Arrow (Type.Var tv, Type.Var tv)))));
+        (array_get,
+          Type.ForAll (TVSet.singleton tv,
+            Type.Arrow (Type.Array (Type.Var tv), Type.Arrow (Type.Int, Type.Var tv))));
+        (array_set,
+          Type.ForAll (TVSet.singleton tv,
+            Type.Arrow (Type.Array (Type.Var tv), Type.Arrow (Type.Int,
+              Type.Arrow (Type.Var tv, Type.Unit))))); ]
+end
+
+
+(** [apply_subst_type subst tp] applies a type variable substitution to a type. *)
+let rec apply_subst_type (subst : subst_t) (tp : Type.t) : Type.t =
+  match tp with
+  | Type.Unit | Type.Bool | Type.Int ->
+      tp
+  | Type.Var tv ->
+      begin try TVMap.find tv subst with Not_found -> tp end
+  | Type.Arrow (tp1, tp2) ->
+      Type.Arrow (apply_subst_type subst tp1, apply_subst_type subst tp2)
+  | Type.Array tp ->
+      Type.Array (apply_subst_type subst tp)
+
+
+(** [free_type_vars_type tp] computes the set of free type variables in the given type. *)
+let free_type_vars_type (tp : Type.t) : TVSet.t =
+  let rec ftv acc x =
+    match x with
     | Type.Unit | Type.Bool | Type.Int ->
-        (rename_context, te)
-    | Type.Arrow (a, b) ->
-        let a_context, a'  = aux rename_context a in
-        let ab_context, b' = aux a_context b in
-        (ab_context, Type.Arrow (a', b'))
-    | Type.Array a ->
-        let context, a' = aux rename_context a in
-        (context, Type.Array a')
-    | Type.Var a ->
-        begin try
-          (rename_context, IMap.find a rename_context)
-        with Not_found ->
-          let var_a = Type.make_type_var () in
-          (IMap.add a var_a rename_context, var_a)
-        end
+        acc
+    | Type.Var tv ->
+        TVSet.add tv acc
+    | Type.Arrow (tp1, tp2) ->
+        let acc' = ftv acc tp1 in
+        ftv acc' tp2
+    | Type.Array tp ->
+        ftv acc tp
   in
-  snd (aux IMap.empty type_expr)
+  ftv TVSet.empty tp
 
 
-(* Recursively examine the AST.  If the AST contains user-defined type constraints, rewrite the
- * constraint equations using program-unique type variable identifiers.  (This is necessary because
- * a type variable like ['a] has a scope which is local to a subexpression, and it's incorrect to
- * assume that ['a] is the *same* type variable across the entire program.  The type unification
- * algorithm can collapse type variables when appropriate.) *)
-let rec rename_constraint_typevars (parsed_expr : Syntax.t) : Syntax.t =
-  let expr  = parsed_expr.Syntax.expr in
-  let annot = parsed_expr.Syntax.parser_info.Syntax.type_annot in
-  let renamed_expr =
-    match expr with
-    | Syntax.Unit | Syntax.Bool _ | Syntax.Int _ | Syntax.Var _ ->
-        expr
-    | Syntax.Eq (a, b) ->
-        Syntax.Eq (rename_constraint_typevars a, rename_constraint_typevars b)
-    | Syntax.Neq (a, b) ->
-        Syntax.Neq (rename_constraint_typevars a, rename_constraint_typevars b)
-    | Syntax.Leq (a, b) ->
-        Syntax.Leq (rename_constraint_typevars a, rename_constraint_typevars b)
-    | Syntax.Geq (a, b) ->
-        Syntax.Geq (rename_constraint_typevars a, rename_constraint_typevars b)
-    | Syntax.Less (a, b) ->
-        Syntax.Less (rename_constraint_typevars a, rename_constraint_typevars b)
-    | Syntax.Greater (a, b) ->
-        Syntax.Greater (rename_constraint_typevars a, rename_constraint_typevars b)
-    | Syntax.Add (a, b) ->
-        Syntax.Add (rename_constraint_typevars a, rename_constraint_typevars b)
-    | Syntax.Sub (a, b) ->
-        Syntax.Sub (rename_constraint_typevars a, rename_constraint_typevars b)
-    | Syntax.Mul (a, b) ->
-        Syntax.Mul (rename_constraint_typevars a, rename_constraint_typevars b)
-    | Syntax.Div (a, b) ->
-        Syntax.Div (rename_constraint_typevars a, rename_constraint_typevars b)
-    | Syntax.Mod (a, b) ->
-        Syntax.Mod (rename_constraint_typevars a, rename_constraint_typevars b)
-    | Syntax.Not a ->
-        Syntax.Not (rename_constraint_typevars a)
-    | Syntax.Neg a ->
-        Syntax.Neg (rename_constraint_typevars a)
-    | Syntax.If (a, b, c) ->
-        Syntax.If (rename_constraint_typevars a, rename_constraint_typevars b,
-          rename_constraint_typevars c)
-    | Syntax.Let (a, b, eq_expr, in_expr) ->
-        Syntax.Let (a, b, rename_constraint_typevars eq_expr, rename_constraint_typevars in_expr)
-    | Syntax.LetRec (a, b, eq_expr, in_expr) ->
-        Syntax.LetRec (a, b, rename_constraint_typevars eq_expr, rename_constraint_typevars in_expr)
-    | Syntax.External (a, tp, b, in_expr) ->
-        Syntax.External (a, rename_single_constraint_typevars tp, b, rename_constraint_typevars in_expr)
-    | Syntax.Apply (a, b_list) ->
-        Syntax.Apply (rename_constraint_typevars a, List.map rename_constraint_typevars b_list)
-    | Syntax.ArrayGet (a, b) ->
-        Syntax.ArrayGet (rename_constraint_typevars a, rename_constraint_typevars b)
-    | Syntax.ArraySet (a, b, c) ->
-        Syntax.ArraySet (rename_constraint_typevars a, rename_constraint_typevars b,
-          rename_constraint_typevars c)
-  in 
-  let renamed_annot =
-    match annot with
-    | None ->
-        annot
-    | Some te ->
-        Some (rename_single_constraint_typevars te)
-  in {
-    Syntax.expr        = renamed_expr;
-    Syntax.parser_info = { parsed_expr.Syntax.parser_info with Syntax.type_annot = renamed_annot }
-  }
+(** [apply_subst_scheme subst scheme] applies a type variable substitution to a
+  * type scheme. *)
+let apply_subst_scheme (subst : subst_t) (scheme : type_scheme_t) : type_scheme_t =
+  let Type.ForAll (univ_quant, tp) = scheme in
+  (* Avoid substituting the bound variables *)
+  let subst' = TVMap.filter (fun tv _ -> not (TVSet.mem tv univ_quant)) subst in
+  Type.ForAll (univ_quant, apply_subst_type subst' tp)
 
 
-(* Recursively annotate all subexpressions with types.
- *    env         : environment in which the expression is evaluated; maps bindings to types
- *    parsed_expr : an untyped expression, as obtained from the parser
- *)
-let rec annotate (env : Type.t SMap.t) (parsed_expr : Syntax.t) : aexpr_t =
-  let parser_info = parsed_expr.Syntax.parser_info in
-  match parsed_expr.Syntax.expr with
-  | Syntax.Unit ->
-      {expr = Unit; inferred_type = Type.Unit; parser_info}
-  | Syntax.Bool a ->
-      {expr = Bool a; inferred_type = Type.Bool; parser_info}
-  | Syntax.Int a ->
-      {expr = Int a; inferred_type = Type.Int; parser_info}
-  | Syntax.Eq (a, b) ->
-      {expr = Eq (annotate env a, annotate env b); inferred_type = Type.Bool; parser_info}
-  | Syntax.Neq (a, b) ->
-      {expr = Neq (annotate env a, annotate env b); inferred_type = Type.Bool; parser_info}
-  | Syntax.Leq (a, b) ->
-      {expr = Leq (annotate env a, annotate env b); inferred_type = Type.Bool; parser_info}
-  | Syntax.Geq (a, b) ->
-      {expr = Geq (annotate env a, annotate env b); inferred_type = Type.Bool; parser_info}
-  | Syntax.Less (a, b) ->
-      {expr = Less (annotate env a, annotate env b); inferred_type = Type.Bool; parser_info}
-  | Syntax.Greater (a, b) ->
-      {expr = Greater (annotate env a, annotate env b); inferred_type = Type.Bool; parser_info}
-  | Syntax.Add (a, b) ->
-      {expr = Add (annotate env a, annotate env b); inferred_type = Type.Int; parser_info}
-  | Syntax.Sub (a, b) ->
-      {expr = Sub (annotate env a, annotate env b); inferred_type = Type.Int; parser_info}
-  | Syntax.Mul (a, b) ->
-      {expr = Mul (annotate env a, annotate env b); inferred_type = Type.Int; parser_info}
-  | Syntax.Div (a, b) ->
-      {expr = Div (annotate env a, annotate env b); inferred_type = Type.Int; parser_info}
-  | Syntax.Mod (a, b) ->
-      {expr = Mod (annotate env a, annotate env b); inferred_type = Type.Int; parser_info}
-  | Syntax.Not a ->
-      {expr = Not (annotate env a); inferred_type = Type.Bool; parser_info}
-  | Syntax.Neg a ->
-      {expr = Neg (annotate env a); inferred_type = Type.Int; parser_info}
-  | Syntax.If (a, b, c) -> {
-      expr          = If (annotate env a, annotate env b, annotate env c);
-      inferred_type = Type.make_type_var ();
-      parser_info
-    }
-  | Syntax.Var var_name ->
-      let var_type = match smap_find var_name env with
-        | Some known_type -> known_type
-        | None            -> raise (Unbound_value (var_name, parser_info))
-      in {
-        expr          = Var var_name;
-        inferred_type = var_type;
-        parser_info
-      }
-  | Syntax.Let (a, args, b, c) ->
-      begin try {
-        expr          = annotate_let false env a args b c;
-        inferred_type = Type.make_type_var ();
-        parser_info
-      } with Duplicate_argument_inner arg_name ->
-        raise (Duplicate_argument (arg_name, parser_info))
-      end
-  | Syntax.LetRec (a, args, b, c) ->
-      begin try {
-        expr = annotate_let true env a args b c;
-        inferred_type = Type.make_type_var ();
-        parser_info
-      } with Duplicate_argument_inner arg_name ->
-        raise (Duplicate_argument (arg_name, parser_info))
-      end
-  | Syntax.External (a_name, a_type, a_impl, b) -> 
-      let env = SMap.add a_name a_type env in {
-      expr = External ({bind_name = a_name; bind_type = a_type}, a_impl, annotate env b);
-      inferred_type = Type.make_type_var ();
-      parser_info
-    }
-  | Syntax.Apply (a, args) ->
-      (* Special case: [array_make] is a predefined library function.  It results in a call
-       * to [zml_array_create], which relies on reference/value type tracking in order to
-       * allocate an array of the correct type.  Consequently it is not appropriate to
-       * define this function via the standard "external" interface.
-       *
-       * FIXME: this isn't sufficient, because [array_make] could just as easily be treated
-       * as first-class and called via unknown-function application. *)
-      begin match a.Syntax.expr with
-      | Syntax.Var "array_make" ->
-          begin match args with
-          | [len; value] -> 
-              let value_aexpr = annotate env value in {
-              expr          = ArrayMake (annotate env len, value_aexpr);
-              inferred_type = Type.Array (value_aexpr.inferred_type);
-              parser_info
-            }
-          | _ ->
-              raise (Incorrect_args ("array_make", parser_info))
-          end
-      | _ -> {
-          expr          = Apply (annotate env a, List.map (annotate env) args);
-          inferred_type = Type.make_type_var ();
-          parser_info
-        }
-      end
-  | Syntax.ArrayGet (a, index) -> {
-      expr          = ArrayGet (annotate env a, annotate env index);
-      inferred_type = Type.make_type_var ();
-      parser_info
-    }
-  | Syntax.ArraySet (a, index, value) -> {
-      expr          = ArraySet (annotate env a, annotate env index, annotate env value);
-      inferred_type = Type.Unit;
-      parser_info
-    }
+(** [free_type_vars_scheme scheme] computes the set of all free type variables
+  * in the given type scheme. *)
+let free_type_vars_scheme (scheme : type_scheme_t) : TVSet.t =
+  let Type.ForAll (univ_quant, tp) = scheme in
+  TVSet.diff (free_type_vars_type tp) univ_quant
 
 
+(** [apply_subst_env subst env] applies a type variable substitution to a typing
+  * environment. *)
+let apply_subst_env (subst : subst_t) (env : type_env_t) : type_env_t =
+  PVMap.map (fun ts -> apply_subst_scheme subst ts) env
 
-(* Annotate a let-binding with type variables. *) 
-and annotate_let is_rec env binding args eq_expr in_expr =
-  (* The first element in the list is the newly-bound variable, which is added to
-   * the environment of the "in" clause (shadowing any previous binding). *)
-  let fun_binding = {bind_name = binding; bind_type = Type.make_type_var () } in
-  let in_env = SMap.add fun_binding.bind_name fun_binding.bind_type env in
-  (* If this is a "let rec" form, then the binding may recur in the "equals"
-   * clause, so the binding must be added to the eq_env. *)
-  let env = if is_rec then in_env else env in
-  (* All other elements in the list are function arguments, which are added to the
-   * environment of the "equals" clause (shadowing any previous binding).  But
-   * first we run a quick check for duplicate argument names... *)
-  let _ = List.fold_left
-    (fun acc arg_name ->
-      if SSet.mem arg_name acc then
-        raise (Duplicate_argument_inner arg_name)
-      else
-        SSet.add arg_name acc)
-    SSet.empty
-    args
-  in
-  let arg_bindings = List.map
-    (fun arg_name -> {bind_name = arg_name; bind_type = Type.make_type_var ()})
-    args
-  in
-  let eq_env = List.fold_left
-    (fun env_acc arg_binding -> SMap.add arg_binding.bind_name arg_binding.bind_type env_acc)
+
+(** [free_type_vars_env env] computes the set of all free type variables in the
+  * given typing environment. *)
+let free_type_vars_env (env : type_env_t) : TVSet.t =
+  PVMap.fold
+    (fun pv ts acc -> TVSet.union acc (free_type_vars_scheme ts))
     env
-    arg_bindings
-  in 
-  if is_rec then
-    LetRec (fun_binding, arg_bindings, annotate eq_env eq_expr, annotate in_env in_expr)
-  else
-    Let    (fun_binding, arg_bindings, annotate eq_env eq_expr, annotate in_env in_expr)
+    TVSet.empty
 
 
+(** [compose_subst outer inner] generates a new substitution [s] such that application of [s]
+  * is equivalent to application of [inner] followed by application of [outer]. *)
+let compose_subst (outer : subst_t) (inner : subst_t) : subst_t =
+  TVMap.merge
+    (fun tv tp_inner_opt tp_outer_opt ->
+      begin match tp_inner_opt, tp_outer_opt with
+      | _, Some tp_outer ->
+          Some tp_outer
+      | tp_inner_opt, None ->
+          tp_inner_opt
+      end)
+    (TVMap.map (fun tp -> apply_subst_type outer tp) inner)
+    outer
 
-(* Given a list of type-annotated expressions, generate the list of type
- * constraints which are imposed by the expression structure. *)
-let rec compute_constraints (acc : constraint_t list) (aexprs : aexpr_t list) : constraint_t list =
-  match aexprs with
-  | [] ->
-      acc
-  | {expr = Unit; _} :: tail
-  | {expr = Bool _; _} :: tail
-  | {expr = Int _ ; _} :: tail
-  | {expr = Var _; _} :: tail ->
-      compute_constraints acc tail
-  | {expr = Eq  (a, b); _} :: tail
-  | {expr = Neq (a, b); _} :: tail ->
-      (* Polymorphic comparisons; lhs and rhs must have the same type *)
-      let constr = {
-        left_type  = a.inferred_type;
-        right_type = b.inferred_type;
-        error_info = a.parser_info
+
+type constraint_t = {
+  (* The type of a constraint: the term on the left must unify with
+   * the type on the right.  [error_info] provides the positions from the
+   * source file which should be associated with this constraint for
+   * the purpose of generating error messages. *)
+  left_type  : Type.t;
+  right_type : Type.t;
+  error_info : Syntax.parser_meta_t
+}
+
+exception Unification_failure of constraint_t
+exception Unification_occurs_check_failure
+
+
+(** [unify constr] generates a type variable substitution which unifies the
+  * given constraint.  [Unification_failure] is raised upon failure. *)
+let rec unify (constr : constraint_t) : subst_t =
+  match constr.left_type, constr.right_type with
+  | (Type.Unit, Type.Unit) | (Type.Bool, Type.Bool) | (Type.Int, Type.Int) ->
+      identity_subst
+  | (Type.Var a, Type.Var b) when a = b ->
+      identity_subst
+  | (Type.Var a, tp) | (tp, Type.Var a) ->
+      if TVSet.mem a (free_type_vars_type tp) then
+        (* occurs check failure *)
+        raise (Unification_failure constr)
+      else
+        TVMap.singleton a tp
+  | (Type.Arrow (left1, right1), Type.Arrow (left2, right2)) ->
+      (* FIXME: error message will be misleading here because the
+       * error info is wrong *)
+      let left_constr = {
+        left_type  = left1;
+        right_type = left2;
+        error_info = constr.error_info
+      } in 
+      let s1 = unify left_constr in
+      let right_constr = {
+        left_type  = apply_subst_type s1 right1;
+        right_type = apply_subst_type s1 right2;
+        error_info = constr.error_info
       } in
-      compute_constraints (constr :: acc) (a :: b :: tail)
-  | {expr = Leq (a, b); _}     :: tail
-  | {expr = Geq (a, b); _}     :: tail
-  | {expr = Less (a, b); _}    :: tail
-  | {expr = Greater (a, b); _} :: tail ->
-      (* Comparisons on ordered types; at present, arguments must be integers *)
-      let a_constr = {
-        left_type  = a.inferred_type;
-        right_type = Type.Int;
-        error_info = a.parser_info
-      } in
-      let b_constr = {
-        left_type  = b.inferred_type;
-        right_type = Type.Int;
-        error_info = b.parser_info
-      } in
-      compute_constraints (a_constr :: b_constr :: acc) (a :: b :: tail)
-  | {expr = Add (a, b); _} :: tail
-  | {expr = Sub (a, b); _} :: tail
-  | {expr = Mul (a, b); _} :: tail
-  | {expr = Div (a, b); _} :: tail
-  | {expr = Mod (a, b); _} :: tail ->
-      (* Binary integer operations *)
-      let a_constr = {
-        left_type  = a.inferred_type;
-        right_type = Type.Int;
-        error_info = a.parser_info
-      } in
-      let b_constr = {
-        left_type  = b.inferred_type;
-        right_type = Type.Int;
-        error_info = b.parser_info
-      } in
-      compute_constraints (a_constr :: b_constr :: acc) (a :: b :: tail)
-  | {expr = Not a; _} :: tail ->
-      (* Unitary boolean operation *)
-      let constr = {
-        left_type  = a.inferred_type;
-        right_type = Type.Bool;
-        error_info = a.parser_info
-      } in
-      compute_constraints (constr :: acc) (a :: tail)
-  | {expr = Neg a; _} :: tail ->
-      (* Unitary integer operation *)
-      let constr = {
-        left_type  = a.inferred_type;
-        right_type = Type.Bool;
-        error_info = a.parser_info
-      } in
-      compute_constraints (constr :: acc) (a :: tail)
-  | {expr = If (cond, true_expr, false_expr); _} as ae :: tail ->
-      (* The condition must be boolean *)
-      let cond_constr = {
-        left_type  = cond.inferred_type;
-        right_type = Type.Bool;
-        error_info = cond.parser_info
-      } in
-      (* The two expressions must have matching types, each of
-       * which match the type variable which represents the
-       * conditional result. *)
-      let true_constr = {
-        left_type  = true_expr.inferred_type;
-        right_type = ae.inferred_type;
-        error_info = true_expr.parser_info
-      } in
-      let false_constr = {
-        left_type  = false_expr.inferred_type;
-        right_type = ae.inferred_type;
-        error_info = false_expr.parser_info
-      } in
-      compute_constraints (cond_constr :: true_constr :: false_constr :: acc)
-        (cond :: true_expr :: false_expr :: tail)
-  | ({expr = Let    (fun_binding, arg_bindings, eq_expr, in_expr); _} as ae) :: tail
-  | ({expr = LetRec (fun_binding, arg_bindings, eq_expr, in_expr); _} as ae) :: tail ->
-      (* When annotating the expression tree we  plugged in a dummy typevar as the
-       * inferred type of this expression, so now we need to constrain that typevar to
-       * match the type of in_expr. *)
-      let expr_constr = {
-        left_type  = ae.inferred_type;
-        right_type = in_expr.inferred_type;
-        error_info = ae.parser_info
-      } in
-      (* In general, a let-binding has an "arrow" type of the form
-       * 'a -> 'b -> ... -> 'n.  We can construct this type by a right-fold
-       * over the types of the arguments, and then add a constraint to require
-       * that the type variable for the let-binding must take this form. *)
-      (* FIXME: this may be problematic--if we fail to unify this constraint,
-       * the error message will be weak.  It would be better to impose the
-       * arrow condition from within [annotate_let]. *)
-      let arrow_type = List.fold_right
-        (fun arg acc -> Type.Arrow (arg.bind_type, acc))
-        arg_bindings
-        eq_expr.inferred_type
+      let s2 = unify right_constr in
+      compose_subst s1 s2
+  | (Type.Array a, Type.Array b) ->
+      unify {left_type = a; right_type = b; error_info = constr.error_info}
+  | (Type.Unit, _) | (Type.Bool, _) | (Type.Int, _)
+  | (Type.Arrow _, _) | (Type.Array _, _) ->
+      raise (Unification_failure constr)
+
+
+(** [generalize env tp] generalizes a type to a type scheme, as is necessary
+  * for the implementation of polymorphic-let. *)
+let generalize (env : type_env_t) (tp : Type.t) : type_scheme_t =
+  let unconstrained = TVSet.diff (free_type_vars_type tp) (free_type_vars_env env) in
+  Type.ForAll (unconstrained, tp)
+
+
+(** [instantiate scheme] instantiates fresh type variables for a type scheme,
+  * yielding a concrete type. *)
+let instantiate (scheme : type_scheme_t) : Type.t =
+  let Type.ForAll (univ_quant, tp) = scheme in
+  let fresh_subst = TVSet.fold
+    (fun tv acc -> TVMap.add tv (Type.Var (TypeVar.fresh ())) acc)
+    univ_quant
+    TVMap.empty
+  in
+  apply_subst_type fresh_subst tp
+
+
+exception Unbound_value of string * Syntax.parser_meta_t
+
+
+(* Damas-Milner's Algorithm W.  Loosely following the implementation described in
+ * Martin Grabmüller's "Algorithm W Step-by-Step", using the natural extensions
+ * for ZML syntax.
+ *
+ * @param env           environment in which the expression is evaluated; maps bindings to types
+ * @param untyped_expr  expression to be type-checked
+ *
+ * @return tuple of ([subst], [typed_expr]), where:
+ *         [subst] is a substitution formed by the unification process
+ *         [typed_expr] is the fully-typed expression
+ *
+ * @raise Typing_unify.Unification_failure if the expression is not well-typed *)
+let rec algorithm_w (env : type_env_t) (untyped_expr : Syntax.t)
+    : subst_t * aexpr_t =
+  match untyped_expr.Syntax.expr with
+  | Syntax.Unit ->
+      (identity_subst, {
+        expr          = Unit;
+        inferred_type = Type.Unit;
+        parser_info   = untyped_expr.Syntax.parser_info})
+  | Syntax.Bool a ->
+      (identity_subst, {
+        expr          = Bool a;
+        inferred_type = Type.Bool;
+        parser_info   = untyped_expr.Syntax.parser_info})
+  | Syntax.Int a ->
+      (identity_subst, {
+        expr          = Int a;
+        inferred_type = Type.Int;
+        parser_info   = untyped_expr.Syntax.parser_info})
+  | Syntax.Var v ->
+      begin try
+        let ts = PVMap.find (ProgVar.of_string v) env in
+        (identity_subst, {
+          expr          = Var v;
+          inferred_type = instantiate ts;
+          parser_info   = untyped_expr.Syntax.parser_info})
+      with Not_found ->
+        raise (Unbound_value (v, untyped_expr.Syntax.parser_info))
+      end
+  | Syntax.Apply (Syntax.FuncExpr func, arg) ->
+      let fresh_type = Type.Var (TypeVar.fresh ()) in
+      let func_subst, func_typed_expr =
+        algorithm_w env func
       in
-      let arrow_constr = {
-        left_type  = fun_binding.bind_type;
-        right_type = arrow_type;
-        error_info = ae.parser_info
-      } in
-      compute_constraints (expr_constr :: arrow_constr :: acc) (eq_expr :: in_expr :: tail)
-  | {expr = External (fun_binding, fun_ext_impl, in_expr); _} as ae :: tail ->
-      (* When annotating the expression tree we  plugged in a dummy typevar as the
-       * inferred type of this expression, so now we need to constrain that typevar to
-       * match the type of in_expr. *)
-      let constr = {
-        left_type  = ae.inferred_type;
-        right_type = in_expr.inferred_type;
-        error_info = ae.parser_info
-      } in
-      compute_constraints (constr :: acc) (in_expr :: tail)
-  | {expr = Apply (fun_expr, args_exprs); _} as ae :: tail ->
-      (* We need to have an arrow type in order to carry out function application *)
-      let arrow_type = List.fold_right
-        (fun arg acc -> Type.Arrow (arg.inferred_type, acc))
-        args_exprs
-        ae.inferred_type
+      let arg_subst, arg_typed_expr =
+        algorithm_w (apply_subst_env func_subst env) arg
       in
-      let arrow_constr = {
-        left_type  = fun_expr.inferred_type;
-        right_type = arrow_type;
-        error_info = fun_expr.parser_info
+      let unify_subst = unify {
+        left_type  = (apply_subst_type arg_subst func_typed_expr.inferred_type);
+        right_type = (Type.Arrow (arg_typed_expr.inferred_type, fresh_type));
+        error_info = untyped_expr.Syntax.parser_info
       } in
-      compute_constraints (arrow_constr :: acc) ((fun_expr :: args_exprs ) @ tail)
-  | {expr = ArrayMake (len, value); _} as ae :: tail ->
-      (* The length must be an int *)
-      let len_constr = {
-        left_type  = len.inferred_type;
-        right_type = Type.Int;
-        error_info = len.parser_info
-      } in
-      (* The array must contain elements of the proper type *)
-      let container_constr = {
-        left_type  = ae.inferred_type;
-        right_type = Type.Array value.inferred_type;
-        error_info = ae.parser_info
-      } in
-      compute_constraints (len_constr :: container_constr :: acc) (len :: value :: tail)
-  | {expr = ArrayGet (arr, index); _} as ae :: tail ->
-      (* The index must be an int *)
-      let index_constr = {
-        left_type  = index.inferred_type;
-        right_type = Type.Int;
-        error_info = index.parser_info
-      } in
-      (* The array must contain elements of the proper type *)
-      let container_constr = {
-        left_type  = arr.inferred_type;
-        right_type = Type.Array ae.inferred_type;
-        error_info = arr.parser_info
-      } in
-      compute_constraints (index_constr :: container_constr :: acc) (arr :: index :: tail)
-  | {expr = ArraySet (arr, index, value); _} as ae :: tail ->
-      (* The index must be an int *)
-      let index_constr = {
-        left_type  = index.inferred_type;
-        right_type = Type.Int;
-        error_info = index.parser_info
-      } in
-      (* The array must contain elements of the proper type *)
-      let container_constr = {
-        left_type  = arr.inferred_type;
-        right_type = Type.Array value.inferred_type;
-        error_info = arr.parser_info
-      } in
-      (* The assignment operation must return unit *)
-      let op_constr = {
-        left_type  = ae.inferred_type;
-        right_type = Type.Unit;
-        error_info = ae.parser_info
-      } in
-      compute_constraints (index_constr :: container_constr :: op_constr :: acc)
-        (arr :: index :: value :: tail)
+      let subst = compose_subst unify_subst (compose_subst arg_subst func_subst) in
+      let tp = apply_subst_type unify_subst fresh_type in
+      (subst, {
+        expr          = Apply (FuncExpr func_typed_expr, arg_typed_expr);
+        inferred_type = tp;
+        parser_info   = untyped_expr.Syntax.parser_info})
+  | Syntax.Apply (Syntax.BuiltinFunc builtin_func, arg) ->
+      (* These built-in functions are typed by substituting a type-equivalent pseudo-function
+       * which is predefined in the environment. *)
+      let type_equivalent_pseudo_func =
+        match builtin_func with
+        | Syntax.Eq       -> ProgVar.to_string BuiltinEnv.poly_comp
+        | Syntax.Neq      -> ProgVar.to_string BuiltinEnv.poly_comp
+        | Syntax.Leq      -> ProgVar.to_string BuiltinEnv.int_comp
+        | Syntax.Geq      -> ProgVar.to_string BuiltinEnv.int_comp
+        | Syntax.Less     -> ProgVar.to_string BuiltinEnv.int_comp
+        | Syntax.Greater  -> ProgVar.to_string BuiltinEnv.int_comp
+        | Syntax.Add      -> ProgVar.to_string BuiltinEnv.int_op
+        | Syntax.Sub      -> ProgVar.to_string BuiltinEnv.int_op
+        | Syntax.Mul      -> ProgVar.to_string BuiltinEnv.int_op
+        | Syntax.Div      -> ProgVar.to_string BuiltinEnv.int_op
+        | Syntax.Mod      -> ProgVar.to_string BuiltinEnv.int_op
+        | Syntax.Not      -> ProgVar.to_string BuiltinEnv.unary_bool_op
+        | Syntax.Neg      -> ProgVar.to_string BuiltinEnv.unary_int_op
+        | Syntax.ArrayGet -> ProgVar.to_string BuiltinEnv.array_get
+        | Syntax.ArraySet -> ProgVar.to_string BuiltinEnv.array_set
+      in
+      let subst, pseudo_typed_expr =
+        algorithm_w env {
+          Syntax.expr = Syntax.Apply (Syntax.FuncExpr
+            { Syntax.expr = Syntax.Var type_equivalent_pseudo_func;
+              (* FIXME: type_equivalent_pseudo_func is a fake function... not sure
+               * if there is an appropriate parser_info value to use here. *)
+              Syntax.parser_info = untyped_expr.Syntax.parser_info }, arg);
+          Syntax.parser_info = untyped_expr.Syntax.parser_info
+        }
+      in
+      begin match pseudo_typed_expr.expr with
+      | Apply (FuncExpr func_typed_expr, arg_typed_expr) ->
+          (subst, {pseudo_typed_expr with expr = Apply (BuiltinFunc builtin_func, arg_typed_expr)})
+      | _ ->
+          assert false
+      end
+  | Syntax.If (cond, true_expr, false_expr) ->
+      (* For the purpose of typing, "if" can be treated as application of function with type
+       * "bool -> 'a -> 'a -> 'a".  After application of Algorithm W, the resulting expression is
+       * type-correct but not behaviorally-correct (it does not capture lazy evaluation semantics of
+       * true_expr and false_expr), so we immediately rewrite back into an "if" form. *)
+      let pseudo_expr =
+        { Syntax.expr = Syntax.Apply (Syntax.FuncExpr (
+          { Syntax.expr = Syntax.Apply (Syntax.FuncExpr (
+            { Syntax.expr = Syntax.Apply (Syntax.FuncExpr (
+              { Syntax.expr = Syntax.Var (ProgVar.to_string BuiltinEnv.cond);
+                (* FIXME: BuiltinEnv.cond is a fake function... not sure if there's actually
+                 * anything appropriate to use for parser_info. *)
+                Syntax.parser_info = untyped_expr.Syntax.parser_info }),
+              cond);
+              Syntax.parser_info = cond.Syntax.parser_info }),
+            true_expr);
+            Syntax.parser_info = true_expr.Syntax.parser_info }),
+          false_expr);
+          Syntax.parser_info = false_expr.Syntax.parser_info }
+      in
+      let subst, pseudo_typed_expr = algorithm_w env pseudo_expr in
+      begin match pseudo_typed_expr with
+      | { expr = Apply (FuncExpr (
+          { expr = Apply (FuncExpr (
+            { expr = Apply (FuncExpr (
+              { expr = Var _; _ }), cond_typed_expr); _ }),
+            true_typed_expr); _ }),
+          false_typed_expr); _ } ->
+          (subst, {
+            expr          = If (cond_typed_expr, true_typed_expr, false_typed_expr);
+            inferred_type = pseudo_typed_expr.inferred_type;
+            parser_info   = untyped_expr.Syntax.parser_info})
+      | _ ->
+          assert false
+      end
+  | Syntax.Lambda (x, body) ->
+      let x_tv     = TypeVar.fresh () in
+      let x_tp     = Type.Var x_tv in
+      let body_env = PVMap.add (ProgVar.of_string x) (Type.ForAll (TVSet.empty, x_tp)) env in
+      let body_subst, body_typed_expr = algorithm_w body_env body in
+      let arg_tp = apply_subst_type body_subst x_tp in
+      (body_subst, {
+        expr = Lambda ({bind_name = x; bind_type = arg_tp}, body_typed_expr);
+        inferred_type = Type.Arrow (arg_tp, body_typed_expr.inferred_type);
+        parser_info   = untyped_expr.Syntax.parser_info})
+  | Syntax.Let (x, body, scope) ->
+      let body_subst, body_typed_expr = algorithm_w env body in
+      let x_generalized_type = generalize (apply_subst_env body_subst env) body_typed_expr.inferred_type in
+      let env'      = PVMap.add (ProgVar.of_string x) x_generalized_type env in
+      let scope_env = apply_subst_env body_subst env' in
+      let scope_subst, scope_typed_expr = algorithm_w scope_env scope in
+      let subst = compose_subst body_subst scope_subst in
+      (subst, {
+        expr = Let (
+          {bind_name = x; bind_type = body_typed_expr.inferred_type},
+          body_typed_expr,
+          scope_typed_expr);
+        inferred_type = scope_typed_expr.inferred_type;
+        parser_info = untyped_expr.Syntax.parser_info})
+  | Syntax.LetRec (x, body, scope) ->
+      (* Since [x] may recur in the body, we have to bind it in the environment.  Generate a new
+       * type variable for this purpose. *)
+      let fresh_type = TypeVar.fresh () in
+      let body_env   = PVMap.add (ProgVar.of_string x)
+        (Type.ForAll (TVSet.empty, Type.Var fresh_type)) env in
+      let body_subst, body_typed_expr = algorithm_w body_env body in
+      (* In general [body_typed_expr] will have embedded dependencies on the type variable
+       * we just introduced.  Using the constraint that type(x) == type(body), we can now run
+       * Algorithm W again without introducing an unnecessary type var.
+       * FIXME: this is probably a hack... how do the pros do it? *)
+      let body_env = PVMap.add (ProgVar.of_string x)
+        (Type.ForAll (TVSet.empty, body_typed_expr.inferred_type)) env in
+      let body_subst, body_typed_expr = algorithm_w body_env body in
+      (* From here on out it's just like non-recursive let. *)
+      let x_generalized_type = generalize (apply_subst_env body_subst env) body_typed_expr.inferred_type in
+      let env'      = PVMap.add (ProgVar.of_string x) x_generalized_type env in
+      let scope_env = apply_subst_env body_subst env' in
+      let scope_subst, scope_typed_expr = algorithm_w scope_env scope in
+      let subst = compose_subst body_subst scope_subst in
+      (subst, {
+        expr = LetRec (
+          {bind_name = x; bind_type = body_typed_expr.inferred_type},
+          body_typed_expr,
+          scope_typed_expr);
+        inferred_type = scope_typed_expr.inferred_type;
+        parser_info = untyped_expr.Syntax.parser_info})
+  | Syntax.External (name, ts, asm_name, scope) ->
+      let env' = PVMap.add (ProgVar.of_string name) ts env in
+      let subst, typed_scope_expr = algorithm_w env' scope in
+      (subst, {
+        expr = External (
+          {bind_name = name; bind_type = instantiate ts},
+          asm_name,
+          typed_scope_expr);
+        inferred_type = typed_scope_expr.inferred_type;
+        parser_info = untyped_expr.Syntax.parser_info})
 
 
-let print_constraints (constraints : constraint_t list) =
-  List.iter
-    (fun constr -> Printf.printf "%s == %s\n"
-      (Type.string_of_type constr.left_type) (Type.string_of_type constr.right_type))
-    constraints
 
-
-let rec apply_substs (substs : Typing_unify.subst_t list) (aexpr : aexpr_t) =
-	(* Apply substitutions on an annotated expression *)
-  let sub      = apply_substs substs in
-	(* Apply substitutions on a type *)
-  let sub_type = Typing_unify.apply_substitutions substs in
-	let aexpr = {aexpr with inferred_type = sub_type aexpr.inferred_type} in
-  match aexpr with
-  | {expr = Unit; _}
-  | {expr = Bool _; _}
-  | {expr = Int _; _}
-	| {expr = Var _; _} -> aexpr
-
-  | {expr = Eq (a, b); _}      -> {aexpr with expr = Eq      (sub a, sub b)}
-  | {expr = Neq (a, b); _}     -> {aexpr with expr = Neq     (sub a, sub b)}
-  | {expr = Leq (a, b); _}     -> {aexpr with expr = Leq     (sub a, sub b)}
-  | {expr = Geq (a, b); _}     -> {aexpr with expr = Geq     (sub a, sub b)}
-  | {expr = Less (a, b); _}    -> {aexpr with expr = Less    (sub a, sub b)}
-  | {expr = Greater (a, b); _} -> {aexpr with expr = Greater (sub a, sub b)}
-  | {expr = Add (a, b); _}     -> {aexpr with expr = Add     (sub a, sub b)}
-  | {expr = Sub (a, b); _}     -> {aexpr with expr = Sub     (sub a, sub b)}
-  | {expr = Mul (a, b); _}     -> {aexpr with expr = Mul     (sub a, sub b)}
-  | {expr = Div (a, b); _}     -> {aexpr with expr = Div     (sub a, sub b)}
-  | {expr = Mod (a, b); _}     -> {aexpr with expr = Mod     (sub a, sub b)}
-
-	| {expr = Not a; _} -> {aexpr with expr = Not (sub a)}
-	| {expr = Neg a; _} -> {aexpr with expr = Neg (sub a)}
-
-	| {expr = If (a, b, c); _} -> {aexpr with expr = If (sub a, sub b, sub c)}
-
-	| {expr = Let (fun_binding, arg_bindings, eq_expr, in_expr); _} -> {aexpr with
-			expr = Let (
-				{fun_binding with bind_type = sub_type fun_binding.bind_type},
-				List.map (fun arg -> {arg with bind_type = sub_type arg.bind_type}) arg_bindings,
-				sub eq_expr,
-				sub in_expr)
-		}
-	| {expr = LetRec (fun_binding, arg_bindings, eq_expr, in_expr); _} -> {aexpr with
-			expr = LetRec (
-				{fun_binding with bind_type = sub_type fun_binding.bind_type},
-				List.map (fun arg -> {arg with bind_type = sub_type arg.bind_type}) arg_bindings,
-				sub eq_expr,
-				sub in_expr)
-		}
-  | {expr = External (fun_binding, fun_ext_impl, in_expr); _} -> {aexpr with
-      expr = External (fun_binding, fun_ext_impl, sub in_expr)
-    }
-
-	| {expr = Apply (a, b_list); _} -> {aexpr with expr = Apply (sub a, List.map sub b_list)}
-  
-  | {expr = ArrayMake (len, value); _}     -> {aexpr with expr = ArrayMake (sub len, sub value)}
-  | {expr = ArrayGet (a, index); _}        -> {aexpr with expr = ArrayGet (sub a, sub index)}
-  | {expr = ArraySet (a, index, value); _} -> {aexpr with expr = ArraySet (sub a, sub index, sub value)}
-
-
-(* Determine the types of all expressions using a Damas-Milner algorithm. *)
 let infer (parsed_expr : Syntax.t) : aexpr_t =
-  let () = Type.reset_type_vars () in
-  let type_renamed_ast = rename_constraint_typevars parsed_expr in
-  let annotated_ast    = annotate SMap.empty type_renamed_ast in
-  let type_constraints = compute_constraints [] [annotated_ast] in
-  let substitutions    = Typing_unify.unify type_constraints in
-  apply_substs substitutions annotated_ast
+  let () = TypeVar.reset_vars () in
+  let _, typed_ast = algorithm_w BuiltinEnv.env parsed_expr in
+  typed_ast
 
 

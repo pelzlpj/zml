@@ -19,47 +19,19 @@
  *  <pelzlpj@gmail.com>.
  ******************************************************************************)
 
-type tvar_t = int
-
-module TVar = struct
-  type t = tvar_t
-  let compare i j =
-    if i < j then -1
-    else if i = 0 then 0
-    else 1
-end
-
-module TVMap = Map.Make(TVar)
+module TVSet = Set.Make(TypeVar)
+module TVMap = Map.Make(TypeVar)
 
 
 type t =
   | Unit                   (** unit type *)
   | Bool                   (** boolean type *)
   | Int                    (** integer type *)
-  | Var of tvar_t          (** a type variable *)
+  | Var of TypeVar.t       (** a type variable *)
   | Arrow of t * t         (** an "arrow", i.e. type of a unary lambda *)
   | Array of t             (** an array containing an arbitrary type *)
 
-
-let typevar_count = ref 0
-
-let reset_type_vars () =
-  typevar_count := 0
-
-let make_type_var () : t =
-  let result = !typevar_count in
-  let () = incr typevar_count in
-  Var result
-
-
-(* Represents type variables using the following pattern:
- * 'a, 'b, ..., 'z, 'a1, 'a2, ..., 'aN *)
-let string_of_typevar_index (index : tvar_t) =
-  let num_chars = 26 in
-  if index < num_chars then
-    Printf.sprintf "'%c" (Char.chr (index + (Char.code 'a')))
-  else
-    Printf.sprintf "a%d" (index + 1 - num_chars)
+type type_scheme_t = ForAll of TVSet.t * t
 
 
 let rec string_of_type typ =
@@ -67,7 +39,7 @@ let rec string_of_type typ =
   | Unit         -> "()"
   | Bool         -> "bool"
   | Int          -> "int"
-  | Var i        -> string_of_typevar_index i
+  | Var i        -> TypeVar.string_of i
   | Arrow ((Arrow _ as a), b) ->
       (* This case occurs in a higher-order function *)
       Printf.sprintf "(%s) -> %s" (string_of_type a) (string_of_type b)
@@ -78,8 +50,8 @@ let rec string_of_type typ =
 
 
 type rename_context_t = {
-  last_tvar : tvar_t;
-  mapping   : tvar_t TVMap.t;
+  last_tvar : int;
+  mapping   : int TVMap.t;
 }
 
 let empty_rename_ctx = {
@@ -88,13 +60,14 @@ let empty_rename_ctx = {
 }
 
 
-let remap_typevar (ctx : rename_context_t) (tvar : tvar_t) =
+let remap_typevar (ctx : rename_context_t) (tvar : TypeVar.t)
+  : rename_context_t * TypeVar.t =
   try
-    (ctx, TVMap.find tvar ctx.mapping)
+    (ctx, TypeVar.of_int (TVMap.find tvar ctx.mapping))
   with Not_found ->
     let last_tvar = ctx.last_tvar + 1 in
     let mapping = TVMap.add tvar last_tvar ctx.mapping in
-    ({last_tvar; mapping}, last_tvar)
+    ({last_tvar; mapping}, TypeVar.of_int last_tvar)
 
 
 (* Given a type expression as input, rename the type variables so that they use

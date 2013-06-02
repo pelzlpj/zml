@@ -40,17 +40,19 @@ let untyped_expr_rhs n expr = untyped_expr expr (rhs_range n)
 
 let typed_expr_sym expr type_annot = typed_expr expr type_annot (symbol_range ())
 
-(* When the user provides type expressions, we use the following hash table to assign
- * a unique integer to every unique type variable identifier. *)
-let tvar_map   = Hashtbl.create 50
-let tvar_count = ref 0
+(* When the user provides type expressions, we use the following hash table to associate
+ * named type variables with abstract type variables. *)
+let tvar_map = Hashtbl.create 50
 
-let make_tvar ident =
+let make_named_tvar (ident : string) : TypeVar.t =
   try
     Hashtbl.find tvar_map ident
   with Not_found ->
-    let tvar = !tvar_count in
-    let () = incr tvar_count in
+    (* It's possible that "fresh ()" will return a type variable which
+     * collides with a variable generated during type inference.  This isn't
+     * a problem, because in the context of the parser these type variables
+     * are *always* universally quantified. *)
+    let tvar = TypeVar.fresh () in
     let () = Hashtbl.add tvar_map ident tvar in
     tvar
 
@@ -127,51 +129,78 @@ seq_expr:
     %prec below_SEMI
     { $1 }
   | expr SEMI seq_expr
-    { untyped_expr_sym (Let (Id.mktmp (), [], $1, $3)) }
+    { untyped_expr_sym (Let (Id.mktmp (), $1, $3)) }
 
 expr:
-  | simple_expr
+  | simple_expr_list
     { $1 }
-  | simple_expr simple_expr_list
-    { untyped_expr_sym (Apply ($1, List.rev $2)) }
   | LET IDENT ident_list EQ expr IN seq_expr
-    { untyped_expr_sym (Let ($2, List.rev $3, $5, $7)) }
+    { let lambda_chain = List.fold_left
+        (fun acc ident ->
+          (* FIXME: parser_info is a complete fiction.  I guess the
+           * ident_list carries the correct information? *)
+          { expr = Lambda (ident, acc); parser_info = acc.parser_info })
+        $5
+        $3
+      in
+      untyped_expr_sym (Let ($2, lambda_chain, $7)) }
   | LET REC IDENT ident_list EQ expr IN seq_expr
-    { untyped_expr_sym (LetRec ($3, List.rev $4, $6, $8)) }
+    { let lambda_chain = List.fold_left
+        (fun acc ident ->
+          (* FIXME: parser_info is a complete fiction.  I guess the
+           * ident_list carries the correct information? *)
+          { expr = Lambda (ident, acc); parser_info = acc.parser_info })
+        $6
+        $4
+      in
+      untyped_expr_sym (LetRec ($3, lambda_chain, $8)) }
   | EXTERNAL IDENT COLON type_expr EQ STRING_LITERAL IN seq_expr
     { typed_expr_sym (External ($2, $4, $6, $8)) $4 }
   | IF expr THEN expr ELSE expr
     { untyped_expr_sym (If ($2, $4, $6)) }
   | NOT expr
     %prec prec_unary_minus
-    { untyped_expr_sym (Not ($2)) }
+    { untyped_expr_sym (Apply ((BuiltinFunc Not), $2)) }
   | MINUS expr
     %prec prec_unary_minus
-    { untyped_expr_sym (Neg ($2)) }
+    { untyped_expr_sym (Apply ((BuiltinFunc Neg), $2)) }
   | expr PLUS expr
-    { untyped_expr_sym (Add ($1, $3)) }
+    { untyped_expr_sym (Apply (FuncExpr (
+        untyped_expr_sym (Apply (BuiltinFunc Add, $1))), $3)) }
   | expr MINUS expr
-    { untyped_expr_sym (Sub ($1, $3)) }
+    { untyped_expr_sym (Apply (FuncExpr (
+        untyped_expr_sym (Apply (BuiltinFunc Sub, $1))), $3)) }
   | expr STAR expr
-    { untyped_expr_sym (Mul ($1, $3)) }
+    { untyped_expr_sym (Apply (FuncExpr (
+        untyped_expr_sym (Apply (BuiltinFunc Mul, $1))), $3)) }
   | expr SLASH expr
-    { untyped_expr_sym (Div ($1, $3)) }
+    { untyped_expr_sym (Apply (FuncExpr (
+        untyped_expr_sym (Apply (BuiltinFunc Div, $1))), $3)) }
   | expr MOD expr
-    { untyped_expr_sym (Mod ($1, $3)) }
+    { untyped_expr_sym (Apply (FuncExpr (
+        untyped_expr_sym (Apply (BuiltinFunc Mod, $1))), $3)) }
   | expr EQ expr
-    { untyped_expr_sym (Eq ($1, $3)) }
+    { untyped_expr_sym (Apply (FuncExpr (
+        untyped_expr_sym (Apply (BuiltinFunc Eq, $1))), $3)) }
   | expr NEQ expr
-    { untyped_expr_sym (Neq ($1, $3)) }
+    { untyped_expr_sym (Apply (FuncExpr (
+        untyped_expr_sym (Apply (BuiltinFunc Neq, $1))), $3)) }
   | expr LEQ expr
-    { untyped_expr_sym (Leq ($1, $3)) }
+    { untyped_expr_sym (Apply (FuncExpr (
+        untyped_expr_sym (Apply (BuiltinFunc Leq, $1))), $3)) }
   | expr GEQ expr
-    { untyped_expr_sym (Geq ($1, $3)) }
+    { untyped_expr_sym (Apply (FuncExpr (
+        untyped_expr_sym (Apply (BuiltinFunc Geq, $1))), $3)) }
   | expr LT expr
-    { untyped_expr_sym (Less ($1, $3)) }
+    { untyped_expr_sym (Apply (FuncExpr (
+        untyped_expr_sym (Apply (BuiltinFunc Less, $1))), $3)) }
   | expr GT expr
-    { untyped_expr_sym (Greater ($1, $3)) }
+    { untyped_expr_sym (Apply (FuncExpr (
+        untyped_expr_sym (Apply (BuiltinFunc Greater, $1))), $3)) }
   | simple_expr DOT LPAREN seq_expr RPAREN LARROW expr
-    { untyped_expr_sym (ArraySet ($1, $4, $7)) }
+    { untyped_expr_sym (Apply (FuncExpr (
+        untyped_expr_sym (Apply (FuncExpr (
+          untyped_expr_sym (Apply (BuiltinFunc ArraySet, $1))), $4))), $7)) }
   | error
     { let spos = Parsing.symbol_start_pos () in
       let epos = Parsing.symbol_end_pos () in
@@ -196,14 +225,15 @@ simple_expr:
   | IDENT
     { untyped_expr_sym (Var ($1)) }
   | simple_expr DOT LPAREN seq_expr RPAREN
-    { untyped_expr_sym (ArrayGet ($1, $4)) }
+    { untyped_expr_sym (Apply (FuncExpr (
+        untyped_expr_sym (Apply (BuiltinFunc ArrayGet, $1))), $4)) }
         
 
 simple_expr_list:
   | simple_expr_list simple_expr
-    { $2 :: $1 }
+    { untyped_expr_sym (Apply (FuncExpr $1, $2)) }
   | simple_expr
-    { [$1] }
+    { $1 }
 
 
 ident_list:
@@ -215,18 +245,23 @@ ident_list:
 
 type_expr:
   | QUOTE IDENT
-    { Type.Var (make_tvar $2) }
+    { let tv = make_named_tvar $2 in
+      Type.ForAll (Type.TVSet.singleton tv, Type.Var tv) }
   | LPAREN type_expr RPAREN
     { $2 }
   | type_expr TYPE_ARROW type_expr
-    { Type.Arrow ($1, $3) }
+    { match ($1, $3) with
+      | (Type.ForAll (left_set, left_tp), Type.ForAll (right_set, right_tp)) ->
+          Type.ForAll (Type.TVSet.union left_set right_set, Type.Arrow (left_tp, right_tp)) }
   | TYPE_UNIT
-    { Type.Unit }
+    { Type.ForAll (Type.TVSet.empty, Type.Unit) }
   | TYPE_BOOL
-    { Type.Bool}
+    { Type.ForAll (Type.TVSet.empty, Type.Bool) }
   | TYPE_INT
-    { Type.Int }
+    { Type.ForAll (Type.TVSet.empty, Type.Int) }
   | type_expr TYPE_ARRAY
-    { Type.Array $1 }
+    { match $1 with
+      | Type.ForAll (tv_set, param_tp) ->
+          Type.ForAll (tv_set, Type.Array param_tp) }
 
 

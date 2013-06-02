@@ -8,9 +8,28 @@ type file_range_t = {
 }
 
 type parser_meta_t = {
-  range      : file_range_t;    (** Location in file where expression is found *)
-  type_annot : Type.t option;   (** Type annotation for this expression, if provided *)
+  range      : file_range_t;                (** Location in file where expression is found *)
+  type_annot : Type.type_scheme_t option;   (** Type annotation for this expression, if provided *)
 }
+
+type builtin_func_t =
+  | Eq
+  | Neq
+  | Leq
+  | Geq
+  | Less
+  | Greater
+  | Add
+  | Sub
+  | Mul
+  | Div
+  | Mod
+  | Not
+  | Neg
+(*  | ArrayMake *)
+  | ArrayGet
+  | ArraySet
+
 
 type t = {
 (** Type [t] represents a node in the AST, as determined by the first pass of parsing the source file. *)
@@ -18,32 +37,23 @@ type t = {
   parser_info : parser_meta_t   (** Additional metadata recorded by the parser *)
 }
 
+and func_t =
+  | BuiltinFunc of builtin_func_t
+  | FuncExpr of t
+
 and expr_t =
 (** [expr_t] defines all the expressions which are supported at the syntax level. *)
   | Unit
   | Bool of bool
   | Int of int
-  | Eq of t * t
-  | Neq of t * t
-  | Leq of t * t
-  | Geq of t * t
-  | Less of t * t
-  | Greater of t * t
-  | Add of t * t
-  | Sub of t * t
-  | Mul of t * t
-  | Div of t * t
-  | Mod of t * t
-  | Not of t
-  | Neg of t
   | If of t * t * t
   | Var of string
-  | Let of string * (string list) * t * t     (* newly bound variable does not recur in the "equals" expression *)
-  | LetRec of string * (string list) * t * t  (* newly bound variable may recur in the "equals" expression *)
-  | External of string * Type.t * string * t  (* external function declaration *)
-  | Apply of t * (t list)
-  | ArrayGet of t * t
-  | ArraySet of t * t * t
+  | Let of string * t * t                       (* newly bound variable does not recur in the body *)
+  | LetRec of string * t * t                    (* newly bound variable may recur in the body *)
+  | Lambda of string * t                        (* unary lambda definition *)
+  | External of string * Type.type_scheme_t *
+                string * t                      (* external (assembly passthrough) function declaration *)
+  | Apply of func_t * t                         (* application of a function to a single argument *)
 
 
 (* Construct an AST node with no type information *)
@@ -58,70 +68,60 @@ let typed_expr expr type_annot range = {
   parser_info = {range; type_annot = Some type_annot}
 }
 
+let print_builtin a = 
+  match a with
+  | Eq          -> "Eq"
+  | Neq         -> "Neq"
+  | Leq         -> "Leq"
+  | Geq         -> "Geq"
+  | Less        -> "Less"
+  | Greater     -> "Greater"
+  | Add         -> "Add"
+  | Sub         -> "Sub"
+  | Mul         -> "Mul"
+  | Div         -> "Div"
+  | Mod         -> "Mod"
+  | Not         -> "Not"
+  | Neg         -> "Neg"
+(*  | ArrayMake   -> "ArrayMake" *)
+  | ArrayGet    -> "ArrayGet"
+  | ArraySet    -> "ArraySet"
+
+
 let rec print_ast (ast : t) =
-  let print_binary ident a b =
-    sprintf "%s (%s, %s)" ident (print_ast a) (print_ast b)
-  in
   let expr_s =
     match ast.expr with
     | Unit ->
       sprintf "()"
-    | Eq (a, b) ->
-      print_binary "Eq" a b
-    | Neq (a, b) ->
-      print_binary "Neq" a b
-    | Leq (a, b) ->
-      print_binary "Leq" a b
-    | Geq (a, b) ->
-      print_binary "Geq" a b
-    | Less (a, b) ->
-      print_binary "Less" a b
-    | Greater (a, b) ->
-      print_binary "Greater" a b
-    | Not a ->
-      sprintf "Not (%s)" (print_ast a)
     | Bool a ->
       if a then sprintf "true" else sprintf "false"
     | Int a ->
       sprintf "%d" a
     | Var a ->
       sprintf "%s" a
-    | Neg a ->
-      sprintf "Neg (%s)" (print_ast a)
-    | Add (a, b) ->
-      print_binary "Add" a b
-    | Sub (a, b) ->
-      print_binary "Sub" a b
-    | Mul (a, b) ->
-      print_binary "Mul" a b
-    | Div (a, b) ->
-      print_binary "Div" a b
-    | Mod (a, b) ->
-      print_binary "Mod" a b
     | If (a, b, c) ->
       sprintf "If (%s, %s, %s)" (print_ast a) (print_ast b) (print_ast c)
-    | Let (a, a_list, b, c) ->
-      sprintf "Let (%s, [%s], %s, %s)"
+    | Let (a, b, c) ->
+      sprintf "Let (%s, %s, %s)"
         a
-        (String.concat "; " (List.fold_left (fun acc a -> acc @ [a]) [] a_list))
         (print_ast b)
         (print_ast c)
-    | LetRec (a, a_list, b, c) ->
-      sprintf "LetRec (%s, [%s], %s, %s)"
+    | LetRec (a, b, c) ->
+      sprintf "LetRec (%s, %s, %s)"
         a
-        (String.concat "; " (List.fold_left (fun acc a -> acc @ [a]) [] a_list))
         (print_ast b)
         (print_ast c)
+    | Lambda (a, b) ->
+      sprintf "Lambda (%s, %s)" a (print_ast b)
     | External (a, a_typ, b, c) ->
       sprintf "External (%s, %s, %s)" a b (print_ast c)
-    | Apply (a, b_list) ->
-      sprintf "Apply (%s [%s])"
-        (print_ast a)
-        (String.concat "; " (List.fold_left (fun acc b -> acc @ [print_ast b]) [] b_list))
-    | ArrayGet (a, b) ->
-      sprintf "ArrayGet (%s, %s)" (print_ast a) (print_ast b)
-    | ArraySet (a, b, c) ->
-      sprintf "ArraySet (%s, %s, %s)" (print_ast a) (print_ast b) (print_ast c)
+    | Apply (f, arg) ->
+      let func_str =
+        match f with
+        | BuiltinFunc a -> print_builtin a
+        | FuncExpr    a -> print_ast a
+      in
+      sprintf "Apply (%s %s)" func_str (print_ast arg)
   in
   let range_s =
     let print_pos pos =

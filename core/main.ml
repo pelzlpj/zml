@@ -44,8 +44,8 @@ let parse filename =
     (* let s = Function.to_string func_normal in *)
     (*let () = print_endline s in
     () *)
-  with Typing_unify.Unification_failure constr ->
-    let error_range = constr.Typing_unify.error_info.Syntax.range in
+  with Typing.Unification_failure constr ->
+    let error_range = constr.Typing.error_info.Syntax.range in
     let () = Printf.printf "Typing error in range %d:%d-%d:%d\n"
       error_range.Syntax.fr_start.Lexing.pos_lnum
       (error_range.Syntax.fr_start.Lexing.pos_cnum -
@@ -55,10 +55,10 @@ let parse filename =
         error_range.Syntax.fr_end.Lexing.pos_bol + 1)
     in
     let (ctx, left_type) =
-      Type.local_rename_typevars Type.empty_rename_ctx constr.Typing_unify.left_type
+      Type.local_rename_typevars Type.empty_rename_ctx constr.Typing.left_type
     in
     let (ctx, right_type) =
-      Type.local_rename_typevars ctx constr.Typing_unify.right_type
+      Type.local_rename_typevars ctx constr.Typing.right_type
     in
     let () = Printf.printf "This expression has type\n    %s\n" (Type.string_of_type left_type) in
     Printf.printf "An expression was expected of type\n    %s\n" (Type.string_of_type right_type)
