@@ -45,6 +45,7 @@ The ZML runtime creates a new reference as the return value for each
 of the following API calls:
 
    * zml_array_alloc 
+   * zml_array_create
    * zml_ref_clone 
    * zml_array_get_ref
 
@@ -78,31 +79,31 @@ Value Representation:
                Word N:  |   ...    |
                         +----------+
      
-     The '1' in Word 1 uniquely identifies a free list cell.  We have 15
-     bits available for N, which implies that the entirety of RAM can be
-     expressed as a single free region.
+     The '1' in the high-order bit of Word 1 uniquely identifies a free
+     list cell.  We have 15 bits available for N, which implies that the
+     entirety of RAM can be expressed as a single free region.
 
-   * Blocks containing values shall begin with a header word:
+   * Blocks containing application data shall begin with a header word:
 
                         ------------
                Word 0:  |0|M|T|    |
                         ------------
 
-     The first bit is 0, to indicate that this is a value and not a free
-     block.  The second bit is the Mark bit used by the mark/sweep
-     algorithm.  The third bit is the type tag bit.  The remaining 13 bits
-     are reserved for type-specific data.
+     The high-order bit is 0, to indicate that this is a data block and
+     not a free block.  The second bit is the Mark bit used by the
+     mark/sweep algorithm.  The third bit is the type tag bit.  The
+     remaining 13 bits are reserved for type-specific data.
 
    * Type tag 0 is used for an "array cell", a general purpose storage
      element.  The array cell can store both value and reference types
-     simultaneously, making it an ideal representation for ML records,
+     simultaneously, making it a suitable representation for ML records,
      list cons cells, etc.
 
      The size of the array is packed into Word 1.
 
      Assuming the array holds K data words, the array reserves R = (K +
-     15)/16 words to store the "refmap".  This is a bitmap: bit 'k' of
-     the bitmap is a 1 iff the value stored at index 'k' in the array
+     15)/16 words to store the "refmap".  This is a bitmap: bit 'b' of
+     the bitmap is a 1 iff the value stored at index 'b' in the array
      is a reference (i.e. the mark-and-sweep algorithm needs to follow
      the pointer).
 
@@ -159,7 +160,7 @@ Roots Table:
    "root reference".  Each (word-sized) element of the array is either
    occupied by a heap reference, or is a freelist element.  The freelist
    carries no data; each node is simply a word pointer to the next
-   freelist node.
+   freelist node within the roots table.
 
    The roots table can easily be made to grow dynamically.  Initially it
    has size 0.  When register_root() is invoked and the freelist is
