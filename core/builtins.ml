@@ -112,12 +112,14 @@ let type_env =
     (array_alloc,
       Type.ForAll (TVSet.empty, Type.Arrow (Type.Int, Type.Array (Type.Int))));
 
-    (* val array_init_one : int array -> int -> int -> unit *)
+    (* val array_init_one : int array -> int -> int -> int -> unit
+     * (The final argument is a boolean "is_ref" flag.) *)
     (array_init_one,
       Type.ForAll (TVSet.empty,
         Type.Arrow (Type.Array Type.Int,
           Type.Arrow (Type.Int,
-            Type.Arrow (Type.Int, Type.Unit)))));
+            Type.Arrow (Type.Int, 
+              Type.Arrow (Type.Int, Type.Unit))))));
 
     (* val array_make : int -> int -> int array *)
     (array_make,

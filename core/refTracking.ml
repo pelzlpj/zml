@@ -115,9 +115,6 @@ and expr_t =
   | Let of sp_var_t * t * t                     (* Let binding for a variable *)
   | ApplyKnown of ValID.t * (sp_var_t list)     (* Application of "known" function *)
   | ApplyUnknown of ValID.t * (sp_var_t list)   (* Application of an "unknown" function (computed address) *)
-  | ArrayAlloc of ValID.t                       (* Construct a new array (size) *)
-  | ArrayInitOne of RefID.t * ValID.t * sp_var_t(* Store a ref or value in an array, setting the
-                                                    storage type to match (arr, index, val) *)
   | ArrayMake of ValID.t * sp_var_t             (* Construct a new array (len, value) *)
   | ArraySet of RefID.t * ValID.t * sp_var_t    (* Store a ref or value in an array (arr, index, ref) *)
   | ArrayGetVal of RefID.t * ValID.t            (* Get a value from an array (arr, index) *)
@@ -195,10 +192,6 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : stri
       sprintf "apply(%s %s)" (ValID.to_string f) (String.concat " " (List.map string_of_sp_var args))
   | ApplyUnknown (f, args) ->
       sprintf "apply_unk(%s %s)" (ValID.to_string f) (String.concat " " (List.map string_of_sp_var args))
-  | ArrayAlloc a ->
-      sprintf "array_alloc(%s)" (ValID.to_string a)
-  | ArrayInitOne (a, b, c) ->
-      sprintf "array_init_one(%s, %s, %s)" (RefID.to_string a) (ValID.to_string b) (string_of_sp_var c)
   | ArrayMake (a, b) ->
       sprintf "array_make(%s, %s)" (ValID.to_string a) (string_of_sp_var b)
   | ArraySet (a, b, c) ->
@@ -278,8 +271,6 @@ let rec identify_ref_clones ?(is_binding_expr=false) (expr : Function.t) : t =
           identify_ref_clones ~is_binding_expr e2)
     | Function.ApplyKnown (f, f_args)   -> ApplyKnown (ValID.of_var f, List.map infer_sp_var f_args)
     | Function.ApplyUnknown (f, f_args) -> ApplyUnknown (ValID.of_var f, List.map infer_sp_var f_args)
-    | Function.ArrayAlloc size          -> ArrayAlloc (ValID.of_var size)
-    | Function.ArrayInitOne (arr, i, v) -> ArrayInitOne (RefID.of_var arr, ValID.of_var i, infer_sp_var v)
     | Function.ArrayMake (len, v)       -> ArrayMake (ValID.of_var len, infer_sp_var v)
     | Function.ArraySet (arr, i, v)     -> ArraySet (RefID.of_var arr, ValID.of_var i, infer_sp_var v)
     | Function.ArrayGetVal (arr, i)     -> ArrayGetVal (RefID.of_var arr, ValID.of_var i)
@@ -366,7 +357,7 @@ let rec make_control_flow_graph
   (expr : t)
     : cfn_t TMap.t =
   match expr.expr with
-  | Unit | Int _ | KnownFuncVar _ | ArrayAlloc _ ->
+  | Unit | Int _ | KnownFuncVar _ ->
       TMap.add expr {
           successors = list_of_opt state.scope_expr;
           inputs     = RSet.empty;
@@ -401,7 +392,7 @@ let rec make_control_flow_graph
       cfn_of_vars state expr args
   | Var x | ArrayMake (_, x) ->
       cfn_of_vars state expr [x]
-  | ArraySet (arr, _, x) | ArrayInitOne (arr, _, x) ->
+  | ArraySet (arr, _, x) ->
       cfn_of_vars state expr ((Ref arr) :: [x])
   | ArrayGetVal (r, _) | ArrayGetRef (r, _) | RefClone r | RefRelease r ->
       cfn_of_vars state expr [Ref r]
@@ -485,7 +476,7 @@ let rec insert_ref_release_aux
         | None   -> e2_with_release
         | Some r -> insert_release_let r e2_with_release)}
   | Unit | Int _ | Var _ | KnownFuncVar _
-  | ApplyKnown _ | ApplyUnknown _ | ArrayAlloc _ | ArrayInitOne _ | ArrayMake _
+  | ApplyKnown _ | ApplyUnknown _ | ArrayMake _
   | ArraySet _ | ArrayGetVal _ | ArrayGetRef _ | RefClone _ | RefRelease _ ->
       begin match curr_binding with
       | Some binding ->

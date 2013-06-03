@@ -71,9 +71,6 @@ type t =
   | ApplyKnown of var_t * (var_t list)              (* Application of "known" function *)
   | ApplyUnknown of var_t * (var_t list)            (* Application of an "unknown" function
                                                           (i.e. call to computed address) *)
-  | ArrayAlloc of var_t                             (* Construct a new array (size) *)
-  | ArrayInitOne of var_t * var_t * var_t           (* Store a ref or value in an array, setting the
-                                                        storage type to match (arr, index, val) *)
   | ArrayMake of var_t * var_t                      (* Construct a new array (length, value) *)
   | ArraySet of var_t * var_t * var_t               (* Store a ref or value in an array (arr, index, val) *)
   | ArrayGetVal of var_t * var_t                    (* Get a value from an array (arr, index) *)
@@ -172,10 +169,6 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : stri
       sprintf "apply(%s %s)" (SPVar.to_string f) (String.concat " " (List.map SPVar.to_string args))
   | ApplyUnknown (f, args) ->
       sprintf "apply_unk(%s %s)" (SPVar.to_string f) (String.concat " " (List.map SPVar.to_string args))
-  | ArrayAlloc a ->
-      sprintf "array_alloc(%s)" (SPVar.to_string a)
-  | ArrayInitOne (a, b, c) ->
-      sprintf "array_init_one(%s, %s, %s)" (SPVar.to_string a) (SPVar.to_string b) (SPVar.to_string c)
   | ArrayMake (a, b) ->
       sprintf "array_make(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
   | ArraySet (a, b, c) ->
@@ -303,14 +296,18 @@ let make_closure_def
   (extract_fun : Normal.t -> t)       (* Method for extracting functions from a subexpression *)
     : t =
   (* Prefix the expression with all the array_init operations necessary to init the closure *)
+  let array_init_one = find_ext_function_def_by_name Builtins.array_init_one in
   let (_, expr_with_array_init) = VSet.fold
     (fun free_var (ofs, exp) ->
       let array_set_expr =
         let ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+        let sp_free_var = infer_storage free_var in
+        let ref_flag_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
         Let (ofs_id, Int ofs,
-          Let ({SPVar.id = Normal.free_var (); SPVar.storage = Value},
-            ArrayInitOne (closure_id, ofs_id, infer_storage free_var),
-            exp))
+          Let (ref_flag_id, Int (match ref_flag_id.SPVar.storage with Ref -> 1 | Value -> 0),
+            Let ({SPVar.id = Normal.free_var (); SPVar.storage = Value},
+              ApplyKnown (array_init_one, [closure_id; ofs_id; sp_free_var; ref_flag_id]),
+              exp)))
       in
       (ofs + 1, array_set_expr))
     free_vars
@@ -322,13 +319,16 @@ let make_closure_def
   let closure_size_id   = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
   let known_func_ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
   let known_func_id     = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+  let ref_flag_id       = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+  let array_alloc       = find_ext_function_def_by_name Builtins.array_alloc in
   Let (known_func_id, KnownFuncVar (value_var f_id),
     Let (closure_size_id, Int (1 + (VSet.cardinal free_vars)),
-      Let (closure_id, ArrayAlloc closure_size_id,
+      Let (closure_id, ApplyKnown (array_alloc, [closure_size_id]),
         Let (known_func_ofs_id, Int 0,
-          Let ({SPVar.id = Normal.free_var (); SPVar.storage = Value},
-            ArrayInitOne (closure_id, known_func_ofs_id, known_func_id),
-            expr_with_array_init)))))
+          Let (ref_flag_id, Int 0,
+            Let ({SPVar.id = Normal.free_var (); SPVar.storage = Value},
+              ApplyKnown (array_init_one, [closure_id; known_func_ofs_id; known_func_id; ref_flag_id]),
+              expr_with_array_init))))))
 
 
 (* Construct the body for a function which is invoked using the calling convention for closures. *)

@@ -254,22 +254,6 @@ let rec compile_virtual_aux
       let g_reg    = RVMap.find (lift_value g) state.reg_of_var in
       let arg_regs = List.map (fun v -> Reg (RVMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Reg g_reg, arg_regs, result_reg)])
-  | IR.ArrayAlloc size ->
-      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_alloc"),
-        [Reg (RVMap.find (lift_value size) state.reg_of_var)],
-      result_reg)])
-  | IR.ArrayInitOne (arr, index, v) ->
-      let is_ref =
-        match v with
-        | RefTracking.Value _ -> Const (ConstNum 0)
-        | RefTracking.Ref _   -> Const (ConstNum 1)
-      in
-      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_init_one"), [
-        Reg (RVMap.find (lift_ref arr) state.reg_of_var);
-        Reg (RVMap.find (lift_value index) state.reg_of_var);
-        Reg (RVMap.find v state.reg_of_var);
-        is_ref],
-      result_reg)])
   | IR.ArrayMake (len, v) ->
       let is_ref =
         match v with
