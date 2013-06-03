@@ -110,7 +110,9 @@ type unary_op_t =
 
 
 type t = {
-  id   : int;     (* Locally-unique identifier attached to this expression *)
+  (* Locally-unique identifier attached to this expression, for ease of constructing
+   * a control-flow graph.  (The identifiers will be dropped in iR.ml.) *)
+  id   : int;     
   expr : expr_t
 }
 

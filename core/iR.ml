@@ -78,31 +78,61 @@ type program_t = {
 }
 
 
-(* Strip expression identifiers from the RefTracking output. *)
-let rec drop_ids (id_expr : RefTracking.t) : t =
-  match id_expr.RefTracking.expr with
-  | RefTracking.Unit                             -> Unit
-  | RefTracking.Int x                            -> Int x
-  | RefTracking.BinaryOp (op, a, b)              -> BinaryOp (op, a, b)
-  | RefTracking.UnaryOp (op, a)                  -> UnaryOp (op, a)
-  | RefTracking.Conditional (cond, a, b, e1, e2) -> Conditional (cond, a, b, drop_ids e1, drop_ids e2)
-  | RefTracking.Var v                            -> Var v
-  | RefTracking.KnownFuncVar v                   -> KnownFuncVar v
-  | RefTracking.Let (a, e1, e2)                  -> Let (a, drop_ids e1, drop_ids e2)
-  | RefTracking.ApplyKnown (f, args)             -> ApplyKnown (f, args)
-  | RefTracking.ApplyUnknown (f, args)           -> ApplyUnknown (f, args)
-  | RefTracking.ArrayAlloc size                  -> ArrayAlloc size
-  | RefTracking.ArrayInitOne (arr, index, v)     -> ArrayInitOne (arr, index, v)
-  | RefTracking.ArrayMake (len, v)               -> ArrayMake (len, v)
-  | RefTracking.ArraySet (arr, index, v)         -> ArraySet (arr, index, v)
-  | RefTracking.ArrayGetVal (arr, index)         -> ArrayGetVal (arr, index)
-  | RefTracking.ArrayGetRef (arr, index)         -> ArrayGetRef (arr, index)
-  | RefTracking.RefClone r                       -> RefClone r
-  | RefTracking.RefRelease r                     -> RefRelease r
+(* Rewrite a known-function application, recognizing built-in operators. *)
+let rewrite_apply_known function_map f (args : sp_var_t list) =
+  let module RT = RefTracking in
+  match (VMap.find f function_map, args) with
+  | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
+      [RT.Value a; RT.Value b]) when asm_name = Builtins.add ->
+      BinaryOp (RT.Add, a, b)
+  | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
+      [RT.Value a; RT.Value b]) when asm_name = Builtins.sub ->
+      BinaryOp (RT.Sub, a, b)
+  | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
+      [RT.Value a; RT.Value b]) when asm_name = Builtins.mul ->
+      BinaryOp (RT.Mul, a, b)
+  | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
+      [RT.Value a; RT.Value b]) when asm_name = Builtins.div ->
+      BinaryOp (RT.Div, a, b)
+  | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
+      [RT.Value a; RT.Value b]) when asm_name = Builtins.modulus ->
+      BinaryOp (RT.Mod, a, b)
+  | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
+      [RT.Value a]) when asm_name = Builtins.neg ->
+      UnaryOp (RT.Neg, a)
+  | _ ->
+      ApplyKnown (f, args)
+
+
+(* Rewrite a RefTracking expression into an IR expression.  The RefTracking locally-unique
+ * expression IDs are dropped, and built-in operator applications are inlined into
+ * first-class AST elements. *)
+let rec rewrite (functions : RefTracking.function_t VMap.t) (id_expr : RefTracking.t) : t =
+  let recur = rewrite functions in
+  let module RT = RefTracking in
+  match id_expr.RT.expr with
+  | RT.Unit                             -> Unit
+  | RT.Int x                            -> Int x
+  | RT.BinaryOp (op, a, b)              -> BinaryOp (op, a, b)
+  | RT.UnaryOp (op, a)                  -> UnaryOp (op, a)
+  | RT.Conditional (cond, a, b, e1, e2) -> Conditional (cond, a, b, recur e1, recur e2)
+  | RT.Var v                            -> Var v
+  | RT.KnownFuncVar v                   -> KnownFuncVar v
+  | RT.Let (a, e1, e2)                  -> Let (a, recur e1, recur e2)
+  | RT.ApplyKnown (f, args)             -> rewrite_apply_known functions f args
+  | RT.ApplyUnknown (f, args)           -> ApplyUnknown (f, args)
+  | RT.ArrayAlloc size                  -> ArrayAlloc size
+  | RT.ArrayInitOne (arr, index, v)     -> ArrayInitOne (arr, index, v)
+  | RT.ArrayMake (len, v)               -> ArrayMake (len, v)
+  | RT.ArraySet (arr, index, v)         -> ArraySet (arr, index, v)
+  | RT.ArrayGetVal (arr, index)         -> ArrayGetVal (arr, index)
+  | RT.ArrayGetRef (arr, index)         -> ArrayGetRef (arr, index)
+  | RT.RefClone r                       -> RefClone r
+  | RT.RefRelease r                     -> RefRelease r
 
 
 (* Strip expression identifiers from the whole-program RefTracking output. *)
-let drop_ids_program (program : RefTracking.program_t) : program_t =
+let drop_ids (program : RefTracking.program_t) : program_t =
   let functions =
     VMap.fold
       (fun f_id f_def acc ->
@@ -111,7 +141,7 @@ let drop_ids_program (program : RefTracking.program_t) : program_t =
           f_impl =
             match f_def.RefTracking.f_impl with
             | RefTracking.NativeFunc (args, body) ->
-                NativeFunc (args, drop_ids body)
+                NativeFunc (args, rewrite program.RefTracking.functions body)
             | RefTracking.ExtFunc (name, arg_count) ->
                 ExtFunc (name, arg_count)
         } in

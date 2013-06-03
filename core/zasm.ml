@@ -248,8 +248,6 @@ let rec compile_virtual_aux
       let (state, tail_asm) = compile_virtual_aux new_binding_state result_reg e2 in
       (state, head_asm @ tail_asm)
   | IR.ApplyKnown (g, g_args) ->
-      (* TODO: this looks an appropriate place to inline the zasm operators in place
-       * of __zml_op_add and friends. *)
       let arg_regs = List.map (fun v -> Reg (RVMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Const (MappedRoutine g), arg_regs, result_reg)])
   | IR.ApplyUnknown (g, g_args) ->
