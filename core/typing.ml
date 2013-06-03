@@ -33,15 +33,11 @@ type expr_t =
   | Int of int                                           (* Integer literal *)
   | Var of string                                        (* Bound variable *)
   | If of aexpr_t * aexpr_t * aexpr_t                    (* Conditional expression *)
-  | Apply of func_t * aexpr_t                            (* Single-argument function application *)
+  | Apply of aexpr_t * aexpr_t                           (* Single-argument function application *)
   | Lambda of bind_t * aexpr_t                           (* Unary lambda definition *)
   | Let of bind_t * aexpr_t * aexpr_t                    (* Let expression *)
   | LetRec of bind_t * aexpr_t * aexpr_t                 (* Recursive let expression *)
   | External of bind_t * string * aexpr_t                (* External function definition *)
-
-and func_t =
-  | FuncExpr of aexpr_t
-  | BuiltinFunc of Syntax.builtin_func_t
 
 and aexpr_t = {
   expr          : expr_t;                (* Expression *)
@@ -55,25 +51,6 @@ and bind_t = {
 }
 
 
-let rec string_of_builtin (func : Syntax.builtin_func_t) : string =
-  match func with
-    | Syntax.Eq          -> "(=)"
-    | Syntax.Neq         -> "(<>)"
-    | Syntax.Leq         -> "(<=)"
-    | Syntax.Geq         -> "(>=)"
-    | Syntax.Less        -> "(<)"
-    | Syntax.Greater     -> "(>)"
-    | Syntax.Add         -> "(+)"
-    | Syntax.Sub         -> "(-)"
-    | Syntax.Mul         -> "(*)"
-    | Syntax.Div         -> "(/)"
-    | Syntax.Mod         -> "(mod)"
-    | Syntax.Not         -> "not"
-    | Syntax.Neg         -> "neg"
-  (*  | ArrayMake *)
-    | Syntax.ArrayGet    -> "array_get"
-    | Syntax.ArraySet    -> "array_set"
-
 let rec string_of_typetree (ast : aexpr_t) : string =
   let expr_s = 
     match ast.expr with
@@ -86,12 +63,9 @@ let rec string_of_typetree (ast : aexpr_t) : string =
           (string_of_typetree cond)
           (string_of_typetree true_expr)
           (string_of_typetree false_expr)
-    | Apply (FuncExpr func, arg) ->
+    | Apply (func, arg) ->
         Printf.sprintf "apply(%s, %s)"
           (string_of_typetree func) (string_of_typetree arg)
-    | Apply (BuiltinFunc func, arg) ->
-        Printf.sprintf "apply(%s, %s)"
-          (string_of_builtin func) (string_of_typetree arg)
     | Lambda (binding, body) ->
         Printf.sprintf "(fun (%s : %s) -> %s)"
           binding.bind_name (Type.string_of_type binding.bind_type)
@@ -139,65 +113,23 @@ type subst_t = Type.t TVMap.t
 let identity_subst = TVMap.empty
 
 
-module BuiltinEnv = struct
-  (* Typing of polymorphic binary comparison operators:
-   *    val __lambda_poly_comp : 'a -> 'a -> bool *)
-  let poly_comp = ProgVar.of_string "__lambda_poly_comp"
+let pseudofunction_if = "__lambda_cond"
 
-  (* Typing of binary comparison operators for integer arguments:
-   *    val __lambda_int_comp : int -> int -> bool *)
-  let int_comp = ProgVar.of_string "__lambda_int_comp"
 
-  (* Typing of binary integer arithmetic operators:
-   *    val __lambda_int_op : int -> int -> int *)
-  let int_op = ProgVar.of_string "__lambda_int_op"
-
-  (* Typing of unary boolean operators:
-   *    val __lambda_unary_bool_op : bool -> bool *)
-  let unary_bool_op = ProgVar.of_string "__lambda_unary_bool_op"
-
-  (* Typing of unary integer operators:
-   *    val __lambda_unary_int_op : int -> int *)
-  let unary_int_op = ProgVar.of_string "__lambda_unary_int_op"
-
-  (* Typing of conditional expressions:
-   *    val __lambda_cond : bool -> 'a -> 'a -> 'a *)
-  let cond = ProgVar.of_string "__lambda_cond"
-
-  (* Typing of built-in array_get:
-   *    val __lambda_array_get : 'a array -> int -> 'a *)
-  let array_get = ProgVar.of_string "__lambda_array_get"
-
-  (* Typing of built-in array_set:
-   *    val __lambda_array_set : 'a array -> int -> 'a -> unit *)
-  let array_set = ProgVar.of_string "__lambda_array_set"
-
-  let env = 
+let builtin_env = 
+  (* if/then/else conditionals are typed by treating them like application
+   * of a function with type "val __lambda_cond : bool -> 'a -> 'a -> 'a". *)
+  let pseudofunction_if_ts =
     let tv = TypeVar.fresh () in
-    List.fold_left
-      (fun acc (pv, ts) -> PVMap.add pv ts acc)
-      PVMap.empty
-      [ (poly_comp, 
-          Type.ForAll (TVSet.singleton tv, Type.Arrow (Type.Var tv, Type.Arrow (Type.Var tv, Type.Bool))));
-        (int_comp,
-          Type.ForAll (TVSet.empty, Type.Arrow (Type.Int, Type.Arrow (Type.Int, Type.Bool))));
-        (int_op,
-          Type.ForAll (TVSet.empty, Type.Arrow (Type.Int, Type.Arrow (Type.Int, Type.Int))));
-        (unary_bool_op,
-          Type.ForAll (TVSet.empty, Type.Arrow (Type.Bool, Type.Bool)));
-        (unary_int_op,
-          Type.ForAll (TVSet.empty, Type.Arrow (Type.Int, Type.Int)));
-        (cond,
-          Type.ForAll (TVSet.singleton tv, Type.Arrow (Type.Bool,
-            Type.Arrow (Type.Var tv, Type.Arrow (Type.Var tv, Type.Var tv)))));
-        (array_get,
-          Type.ForAll (TVSet.singleton tv,
-            Type.Arrow (Type.Array (Type.Var tv), Type.Arrow (Type.Int, Type.Var tv))));
-        (array_set,
-          Type.ForAll (TVSet.singleton tv,
-            Type.Arrow (Type.Array (Type.Var tv), Type.Arrow (Type.Int,
-              Type.Arrow (Type.Var tv, Type.Unit))))); ]
-end
+    Type.ForAll (TVSet.singleton tv,
+      Type.Arrow (Type.Bool,
+        Type.Arrow (Type.Var tv,
+          Type.Arrow (Type.Var tv, Type.Var tv))))
+  in
+  List.fold_left
+    (fun acc (builtin, ts) -> PVMap.add (ProgVar.of_string builtin) ts acc)
+    PVMap.empty
+    ((pseudofunction_if, pseudofunction_if_ts) :: Builtins.type_env)
 
 
 (** [apply_subst_type subst tp] applies a type variable substitution to a type. *)
@@ -389,7 +321,7 @@ let rec algorithm_w (env : type_env_t) (untyped_expr : Syntax.t)
       with Not_found ->
         raise (Unbound_value (v, untyped_expr.Syntax.parser_info))
       end
-  | Syntax.Apply (Syntax.FuncExpr func, arg) ->
+  | Syntax.Apply (func, arg) ->
       let fresh_type = Type.Var (TypeVar.fresh ()) in
       let func_subst, func_typed_expr =
         algorithm_w env func
@@ -405,73 +337,36 @@ let rec algorithm_w (env : type_env_t) (untyped_expr : Syntax.t)
       let subst = compose_subst unify_subst (compose_subst arg_subst func_subst) in
       let tp = apply_subst_type unify_subst fresh_type in
       (subst, {
-        expr          = Apply (FuncExpr func_typed_expr, arg_typed_expr);
+        expr          = Apply (func_typed_expr, arg_typed_expr);
         inferred_type = tp;
         parser_info   = untyped_expr.Syntax.parser_info})
-  | Syntax.Apply (Syntax.BuiltinFunc builtin_func, arg) ->
-      (* These built-in functions are typed by substituting a type-equivalent pseudo-function
-       * which is predefined in the environment. *)
-      let type_equivalent_pseudo_func =
-        match builtin_func with
-        | Syntax.Eq       -> ProgVar.to_string BuiltinEnv.poly_comp
-        | Syntax.Neq      -> ProgVar.to_string BuiltinEnv.poly_comp
-        | Syntax.Leq      -> ProgVar.to_string BuiltinEnv.int_comp
-        | Syntax.Geq      -> ProgVar.to_string BuiltinEnv.int_comp
-        | Syntax.Less     -> ProgVar.to_string BuiltinEnv.int_comp
-        | Syntax.Greater  -> ProgVar.to_string BuiltinEnv.int_comp
-        | Syntax.Add      -> ProgVar.to_string BuiltinEnv.int_op
-        | Syntax.Sub      -> ProgVar.to_string BuiltinEnv.int_op
-        | Syntax.Mul      -> ProgVar.to_string BuiltinEnv.int_op
-        | Syntax.Div      -> ProgVar.to_string BuiltinEnv.int_op
-        | Syntax.Mod      -> ProgVar.to_string BuiltinEnv.int_op
-        | Syntax.Not      -> ProgVar.to_string BuiltinEnv.unary_bool_op
-        | Syntax.Neg      -> ProgVar.to_string BuiltinEnv.unary_int_op
-        | Syntax.ArrayGet -> ProgVar.to_string BuiltinEnv.array_get
-        | Syntax.ArraySet -> ProgVar.to_string BuiltinEnv.array_set
-      in
-      let subst, pseudo_typed_expr =
-        algorithm_w env {
-          Syntax.expr = Syntax.Apply (Syntax.FuncExpr
-            { Syntax.expr = Syntax.Var type_equivalent_pseudo_func;
-              (* FIXME: type_equivalent_pseudo_func is a fake function... not sure
-               * if there is an appropriate parser_info value to use here. *)
-              Syntax.parser_info = untyped_expr.Syntax.parser_info }, arg);
-          Syntax.parser_info = untyped_expr.Syntax.parser_info
-        }
-      in
-      begin match pseudo_typed_expr.expr with
-      | Apply (FuncExpr func_typed_expr, arg_typed_expr) ->
-          (subst, {pseudo_typed_expr with expr = Apply (BuiltinFunc builtin_func, arg_typed_expr)})
-      | _ ->
-          assert false
-      end
   | Syntax.If (cond, true_expr, false_expr) ->
       (* For the purpose of typing, "if" can be treated as application of function with type
        * "bool -> 'a -> 'a -> 'a".  After application of Algorithm W, the resulting expression is
        * type-correct but not behaviorally-correct (it does not capture lazy evaluation semantics of
        * true_expr and false_expr), so we immediately rewrite back into an "if" form. *)
       let pseudo_expr =
-        { Syntax.expr = Syntax.Apply (Syntax.FuncExpr (
-          { Syntax.expr = Syntax.Apply (Syntax.FuncExpr (
-            { Syntax.expr = Syntax.Apply (Syntax.FuncExpr (
-              { Syntax.expr = Syntax.Var (ProgVar.to_string BuiltinEnv.cond);
-                (* FIXME: BuiltinEnv.cond is a fake function... not sure if there's actually
+        { Syntax.expr = Syntax.Apply (
+          { Syntax.expr = Syntax.Apply (
+            { Syntax.expr = Syntax.Apply (
+              { Syntax.expr = Syntax.Var pseudofunction_if;
+                (* FIXME: pseudofunction_if is a fake function... not sure if there's actually
                  * anything appropriate to use for parser_info. *)
-                Syntax.parser_info = untyped_expr.Syntax.parser_info }),
+                Syntax.parser_info = untyped_expr.Syntax.parser_info },
               cond);
-              Syntax.parser_info = cond.Syntax.parser_info }),
+              Syntax.parser_info = cond.Syntax.parser_info },
             true_expr);
-            Syntax.parser_info = true_expr.Syntax.parser_info }),
+            Syntax.parser_info = true_expr.Syntax.parser_info },
           false_expr);
           Syntax.parser_info = false_expr.Syntax.parser_info }
       in
       let subst, pseudo_typed_expr = algorithm_w env pseudo_expr in
       begin match pseudo_typed_expr with
-      | { expr = Apply (FuncExpr (
-          { expr = Apply (FuncExpr (
-            { expr = Apply (FuncExpr (
-              { expr = Var _; _ }), cond_typed_expr); _ }),
-            true_typed_expr); _ }),
+      | { expr = Apply (
+          { expr = Apply (
+            { expr = Apply (
+              { expr = Var _; _ }, cond_typed_expr); _ },
+            true_typed_expr); _ },
           false_typed_expr); _ } ->
           (subst, {
             expr          = If (cond_typed_expr, true_typed_expr, false_typed_expr);
@@ -546,7 +441,22 @@ let rec algorithm_w (env : type_env_t) (untyped_expr : Syntax.t)
 
 let infer (parsed_expr : Syntax.t) : aexpr_t =
   let () = TypeVar.reset_vars () in
-  let _, typed_ast = algorithm_w BuiltinEnv.env parsed_expr in
-  typed_ast
+  let _, typed_ast = algorithm_w builtin_env parsed_expr in
+
+  (* Now that typing is complete, inject External definitions for all
+   * the built-in functions. *)
+  let bogus_parser_info = {
+    Syntax.range =
+      {Syntax.fr_start = Lexing.dummy_pos; Syntax.fr_end = Lexing.dummy_pos};
+    Syntax.type_annot = None
+  } in
+  List.fold_left 
+    (fun ast (asm_name, ts) -> {
+      expr = External ({bind_name = asm_name; bind_type = instantiate ts}, asm_name, ast);
+      inferred_type = ast.inferred_type;
+      parser_info = bogus_parser_info
+    })
+    typed_ast
+    Builtins.type_env
 
 

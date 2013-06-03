@@ -36,12 +36,14 @@
  *
  *    * Boolean "false" and "true" are converted to 0 and 1, respectively.
  *
- *    * Applications of built-in operators are recognized as first-class
- *      entities, so they can be trivially inlined as assembly opcodes.
- *
  *    * Multi-argument function definitions are recognized as first-class
  *      entities, so they more closely match calling conventions for
  *      the target virtual machines.
+ *
+ * FIXME: polymorphic builtins probably need to be recognized within this module, 
+ * so that an appropriate implementation can be selected... i.e. "__zml_op_pseudofunc_poly_eq"
+ * should be rewritten as something like "__zml_array_eq" when operating on
+ * an array type.
  *)
 
 open Printf
@@ -65,16 +67,6 @@ module VSet = Set.Make(VarID)
 module SMap = Map.Make(String)
 
 
-type binary_op_t =
-  | Add   (* Integer addition *)
-  | Sub   (* Integer subtraction *)
-  | Mul   (* Integer multiplication *)
-  | Div   (* Integer division *)
-  | Mod   (* Integer modulus *)
-
-type unary_op_t =
-  | Neg   (* Integer negation *)
-
 type cond_t =
   | IfEq    (* Branching on integer equality test *)
   | IfLess  (* Branching on integer ordering test *)
@@ -83,29 +75,18 @@ type cond_t =
 type t =
   | Unit                                              (* Unit literal *)
   | Int of int                                        (* Integer constant *)
-  | BinaryOp of binary_op_t * var_t * var_t           (* Binary integer operation *)
-  | UnaryOp of unary_op_t * var_t                     (* Unary integer operation *)
   | Conditional of cond_t * var_t * var_t * t * t     (* Conditional form *)
   | Var of var_t                                      (* Bound variable reference *)
   | Let of var_t * t * t                              (* Let binding for a variable *)
   | LetFun of string * var_t * (var_t list) * t * t   (* Let binding for a function definition *)
   | External of string * var_t * string * int * t     (* External (assembly passthrough) function definition *)
   | Apply of var_t * (var_t list)                     (* Function application *)
-  | ArrayMake of var_t * var_t                        (* Array constructor *)
-  | ArrayGet of var_t * var_t                         (* Array lookup *)
-  | ArraySet of var_t * var_t * var_t                 (* Array mutate *)
 
 
 let rec string_of_normal (ast : t) : string =
   match ast with
   | Unit -> "()"
   | Int i -> string_of_int i
-  | BinaryOp (Add, a, b) -> sprintf "(%s + %s)"  (VarID.to_string a) (VarID.to_string b)
-  | BinaryOp (Sub, a, b) -> sprintf "(%s - %s)"  (VarID.to_string a) (VarID.to_string b)
-  | BinaryOp (Mul, a, b) -> sprintf "(%s * %s)"  (VarID.to_string a) (VarID.to_string b)
-  | BinaryOp (Div, a, b) -> sprintf "(%s / %s)"  (VarID.to_string a) (VarID.to_string b)
-  | BinaryOp (Mod, a, b) -> sprintf "(%s %% %s)" (VarID.to_string a) (VarID.to_string b)
-  | UnaryOp  (Neg, a)    -> sprintf "(- %s)\n" (VarID.to_string a)
   | Conditional (cond, a, b, c, d) ->
       let op_s =
         match cond with
@@ -127,12 +108,6 @@ let rec string_of_normal (ast : t) : string =
   | Apply (f, args) ->
       sprintf "apply(%s %s)" (VarID.to_string f)
         (String.concat " " (List.map (fun x -> VarID.to_string x) args))
-  | ArrayMake (len, value) ->
-      sprintf "array_make(%s, %s)" (VarID.to_string len) (VarID.to_string value)
-  | ArrayGet (arr, index) ->
-      sprintf "%s.(%s)" (VarID.to_string arr) (VarID.to_string index)
-  | ArraySet (arr, index, value) ->
-      sprintf "%s.(%s) <- %s" (VarID.to_string arr) (VarID.to_string index) (VarID.to_string value)
 
 
 
@@ -169,8 +144,6 @@ let rec count_arrow_type_args ?(acc=0) x =
   | _ ->
       acc
 
-
-exception Unmatched_operator_application
 
 
 (* If necessary, insert a let expression which binds a temporary variable to an intermediate
@@ -284,166 +257,23 @@ and normalize_lambda
       (List.rev args_acc', normalize_aux body_renames body)
 
 
-(* Normalize application of a unary operator.
- *
- * Raises: Unmatched_operator_application, if an unexpected operator is found in this unary
- * function application construct.  (This could arise, for example, if the parser emitted code
- * corresponding to apply( (+), x ), which should lead to closure creation. *)
-and normalize_apply_unary_op
-  (renames  : rename_context_t)       (* Variable renaming context for the current expression *)
-  (operator : Syntax.builtin_func_t)  (* Operator being applied *)
-  (arg      : Typing.aexpr_t)         (* Operator argument *)
-    : t =
-  match operator with
-  | Syntax.Not ->
-      (* Let the optimizer deal with it... *)
-      insert_let renames arg
-        (fun a_binding ->
-          let one_binding = {VarID.id = free_var (); VarID.tp = Type.Int} in
-          Let (one_binding, Int 1, Conditional (IfEq, a_binding, one_binding, Int 0, Int 1)))
-  | Syntax.Neg ->
-      insert_let renames arg (fun a_binding -> UnaryOp (Neg, a_binding))
-  | _ ->
-      raise Unmatched_operator_application
-
-
-(* Normalize application of a binary operator.
- *
- * Raises: Unmatched_operator_application, if an unexpected operator is found in this binary
- * function application construct.  (Is it possible to write correct code that leads to this case?)
- * *)
-and normalize_apply_binary_op
-  (renames   : rename_context_t)        (* Variable renaming context for the current expression *)
-  (operator  : Syntax.builtin_func_t)   (* Operator being applied *)
-  (left_arg  : Typing.aexpr_t)          (* First operator argument *)
-  (right_arg : Typing.aexpr_t)          (* Second operator argument *)
-    : t =
-  match operator with
-  | Syntax.Eq ->
-      insert_binary_let renames left_arg right_arg
-        (fun a_binding b_binding ->
-          match left_arg.Typing.inferred_type with
-          | Type.Unit ->
-              (* Unit equality never fails *)
-              Int 1
-          | Type.Bool
-          | Type.Int
-          | Type.Arrow _ ->
-              (* Either an integer value equality test, or a function pointer equality test *)
-              (* FIXME: this is probably wrong for closures... *)
-              Conditional (IfEq, a_binding, b_binding, Int 1, Int 0)
-          | Type.Array _ ->
-              (* FIXME: structural equality, should invoke elementwise comparison *)
-              assert false
-          | Type.Var _ ->
-              (* Type variables should have been eliminated by the time we get here *)
-              assert false)
-  | Syntax.Neq ->
-      insert_binary_let renames left_arg right_arg
-        (fun a_binding b_binding ->
-          match left_arg.Typing.inferred_type with
-          | Type.Unit ->
-              (* Unit equality never fails *)
-              Int 1
-          | Type.Bool
-          | Type.Int
-          | Type.Arrow _ ->
-              (* Either an integer value inequality test, or a function pointer inequality test *)
-              (* FIXME: this is probably wrong for closures... *)
-              Conditional (IfEq, a_binding, b_binding, Int 0, Int 1)
-          | Type.Array _ ->
-              (* FIXME: structural equality, should invoke elementwise comparison *)
-              assert false
-          | Type.Var _ ->
-              (* Type variables should have been eliminated by the time we get here *)
-              assert false)
-  | Syntax.Leq ->
-      (* Using transformation a <= b --> not (b < a) *)
-      normalize_integer_less renames right_arg left_arg (Int 0) (Int 1)
-  | Syntax.Geq ->
-      (* Using transformation a >= b --> not (a < b) *)
-      normalize_integer_less renames left_arg right_arg (Int 0) (Int 1)
-  | Syntax.Less ->
-      normalize_integer_less renames left_arg right_arg (Int 1) (Int 0)
-  | Syntax.Greater ->
-      (* Using transformation a > b --> b < a *)
-      normalize_integer_less renames right_arg left_arg (Int 1) (Int 0)
-  | Syntax.Add ->
-      insert_binary_let renames left_arg right_arg
-        (fun a_binding b_binding -> BinaryOp (Add, a_binding, b_binding))
-  | Syntax.Sub ->
-      insert_binary_let renames left_arg right_arg
-        (fun a_binding b_binding -> BinaryOp (Sub, a_binding, b_binding))
-  | Syntax.Mul ->
-      insert_binary_let renames left_arg right_arg
-        (fun a_binding b_binding -> BinaryOp (Mul, a_binding, b_binding))
-  | Syntax.Div ->
-      insert_binary_let renames left_arg right_arg
-        (fun a_binding b_binding -> BinaryOp (Div, a_binding, b_binding))
-  | Syntax.Mod ->
-      insert_binary_let renames left_arg right_arg
-        (fun a_binding b_binding -> BinaryOp (Mod, a_binding, b_binding))
-  | Syntax.ArrayGet ->
-      insert_binary_let renames left_arg right_arg
-        (fun a_binding b_binding -> ArrayGet (a_binding, b_binding))
-  | _ ->
-      raise Unmatched_operator_application
-
-
-(* Normalize a (possibly) multi-argument function application.  This will coalesce as many
+(* Normalize a (possibly multi-argument) function application. This will coalesce as many
  * arguments as possible into a single application, constructing intermediate expressions
  * only when the chain of Apply() operations is broken. *)
-and normalize_apply_multiple
-  (renames : rename_context_t)      (* Variable renaming context for the current expression *)
-  (arg_acc : var_t list)            (* Accumulator for applied arguments (reversed) *)
-  (func    : Typing.func_t)         (* Function being applied *)
-  (arg     : Typing.aexpr_t)        (* Expression to which the function is applied *)
-    : t =
-  match func with
-  | Typing.FuncExpr ({Typing.expr = Typing.Apply (inner_func, inner_arg); _}) ->
-      insert_let renames arg
-        (fun arg_var -> normalize_apply_multiple renames (arg_var :: arg_acc) inner_func inner_arg)
-  | Typing.FuncExpr func_expr ->
-      insert_binary_let renames func_expr arg
-        (fun bound_func bound_arg ->
-          Apply (bound_func, List.rev (bound_arg :: arg_acc)))
-  | Typing.BuiltinFunc builtin ->
-      (* FIXME: need to be willing to emit a closure here... *)
-      assert false
-
-
-(* Normalize a function application. *)
 and normalize_apply
   (renames : rename_context_t)      (* Variable renaming context for the current expression *)
-  (func    : Typing.func_t)         (* Function being applied *)
+  (arg_acc : var_t list)            (* Accumulator for applied arguments (reversed) *)
+  (func    : Typing.aexpr_t)        (* Function being applied *)
   (arg     : Typing.aexpr_t)        (* Argument to which the function is applied *)
     : t =
-  (* To simplify the implementation of Algorithm W, the parser expresses the built-in
-   * operators as single-argument function applications.  Now that typing is complete,
-   * we lift operators back to first-class elements which can be easily transformed
-   * into assembly opcodes. *)
-  try
-    begin match func with
-    (* Unary built-in operator applications *)
-    | Typing.BuiltinFunc operator ->
-        normalize_apply_unary_op renames operator arg
-    (* Binary built-in operator applications *)
-    | Typing.FuncExpr {Typing.expr = Typing.Apply (Typing.BuiltinFunc operator, left_arg); _} ->
-        normalize_apply_binary_op renames operator left_arg arg
-    (* Ugh, special handling for ArraySet... *)
-    | Typing.FuncExpr
-        {Typing.expr = Typing.Apply (Typing.FuncExpr
-          {Typing.expr = Typing.Apply (Typing.BuiltinFunc Syntax.ArraySet, arr); _}, index); _} ->
-        insert_let renames arr
-          (fun arr_var -> insert_let renames index
-            (fun index_var -> insert_let renames arg
-              (fun arg_var -> ArraySet (arr_var, index_var, arg_var))))
-    | _ ->
-        raise Unmatched_operator_application
-    end
-  with Unmatched_operator_application ->
-    (* General case function application. *)
-    normalize_apply_multiple renames [] func arg
+  match func.Typing.expr with
+  | Typing.Apply (inner_func, inner_arg) ->
+      insert_let renames arg
+        (fun arg_var -> normalize_apply renames (arg_var :: arg_acc) inner_func inner_arg)
+  | _ ->
+      insert_binary_let renames func arg
+        (fun bound_func bound_arg ->
+          Apply (bound_func, List.rev (bound_arg :: arg_acc)))
 
 
 (* Normalize an if/then/else conditional.
@@ -462,9 +292,9 @@ and normalize_if
   (true_expr : Typing.aexpr_t)      (* Expression evaluated if true *)
   (false_expr: Typing.aexpr_t)      (* Expression evaluated if false *)
     : t =
-  match cond_expr with
-  | {Typing.expr = Typing.Apply (Typing.FuncExpr
-      {Typing.expr = Typing.Apply (Typing.BuiltinFunc Syntax.Eq, a); _}, b); _} ->
+  match cond_expr.Typing.expr with
+  | Typing.Apply ({Typing.expr = Typing.Apply (
+      {Typing.expr = Typing.Var op; _}, a); _}, b) when op = Builtins.eq ->
       let true_norm  = normalize_aux renames true_expr in
       let false_norm = normalize_aux renames false_expr in
       insert_binary_let renames a b
@@ -485,8 +315,8 @@ and normalize_if
           | Type.Var _ ->
               (* Type variables shall be eliminated *)
               assert false)
-  | {Typing.expr = Typing.Apply (Typing.FuncExpr
-      {Typing.expr = Typing.Apply (Typing.BuiltinFunc Syntax.Neq, a); _}, b); _} ->
+  | Typing.Apply ({Typing.expr = Typing.Apply (
+      {Typing.expr = Typing.Var op; _}, a); _}, b) when op = Builtins.neq ->
       let true_norm  = normalize_aux renames true_expr in
       let false_norm = normalize_aux renames false_expr in
       insert_binary_let renames a b
@@ -507,25 +337,25 @@ and normalize_if
           | Type.Var _ ->
               (* Type variables shall be eliminated *)
               assert false)
-  | {Typing.expr = Typing.Apply (Typing.FuncExpr 
-      {Typing.expr = Typing.Apply (Typing.BuiltinFunc Syntax.Leq, a); _}, b); _} ->
+  | Typing.Apply ({Typing.expr = Typing.Apply (
+      {Typing.expr = Typing.Var op; _}, a); _}, b) when op = Builtins.leq ->
       let true_norm  = normalize_aux renames true_expr in
       let false_norm = normalize_aux renames false_expr in
       (* Using transformation a <= b --> not (b < a) *)
       normalize_integer_less renames b a false_norm true_norm
-  | {Typing.expr = Typing.Apply (Typing.FuncExpr
-      {Typing.expr = Typing.Apply (Typing.BuiltinFunc Syntax.Geq, a); _}, b); _} ->
+  | Typing.Apply ({Typing.expr = Typing.Apply (
+      {Typing.expr = Typing.Var op; _}, a); _}, b) when op = Builtins.geq ->
       let true_norm  = normalize_aux renames true_expr in
       let false_norm = normalize_aux renames false_expr in
       (* Using transformation a >= b --> not (a < b) *)
       normalize_integer_less renames a b false_norm true_norm
-  | {Typing.expr = Typing.Apply (Typing.FuncExpr 
-      {Typing.expr = Typing.Apply (Typing.BuiltinFunc Syntax.Less, a); _}, b); _} ->
+  | Typing.Apply ({Typing.expr = Typing.Apply (
+      {Typing.expr = Typing.Var op; _}, a); _}, b) when op = Builtins.less ->
       let true_norm  = normalize_aux renames true_expr in
       let false_norm = normalize_aux renames false_expr in
       normalize_integer_less renames a b true_norm false_norm
-  | {Typing.expr = Typing.Apply (Typing.FuncExpr
-      {Typing.expr = Typing.Apply (Typing.BuiltinFunc Syntax.Greater, a); _}, b); _} ->
+  | Typing.Apply ({Typing.expr = Typing.Apply (
+      {Typing.expr = Typing.Var op; _}, a); _}, b) when op = Builtins.greater ->
       let true_norm  = normalize_aux renames true_expr in
       let false_norm = normalize_aux renames false_expr in
       (* Using transformation a > b --> b < a *)
@@ -566,7 +396,7 @@ and normalize_aux
   | Typing.LetRec (name, eq_expr, in_expr) ->
       normalize_let renames ~is_rec:true name eq_expr in_expr
   | Typing.Apply (func, arg) ->
-      normalize_apply renames func arg
+      normalize_apply renames [] func arg
   | Typing.Lambda (arg, body) ->
       (* Rewriting "fun x y ... -> ..." as "let f x y ... -> ... in f" *)
       let args, combined_body = normalize_lambda renames [] arg body in

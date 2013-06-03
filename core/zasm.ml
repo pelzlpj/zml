@@ -219,14 +219,14 @@ let rec compile_virtual_aux
   | IR.BinaryOp (op, a, b) ->
       let ctor =
         match op with
-        | Normal.Add -> (fun x y z -> ADD (x, y, z))
-        | Normal.Sub -> (fun x y z -> SUB (x, y, z))
-        | Normal.Mul -> (fun x y z -> MUL (x, y, z))
-        | Normal.Div -> (fun x y z -> DIV (x, y, z))
-        | Normal.Mod -> (fun x y z -> MOD (x, y, z))
+        | RefTracking.Add -> (fun x y z -> ADD (x, y, z))
+        | RefTracking.Sub -> (fun x y z -> SUB (x, y, z))
+        | RefTracking.Mul -> (fun x y z -> MUL (x, y, z))
+        | RefTracking.Div -> (fun x y z -> DIV (x, y, z))
+        | RefTracking.Mod -> (fun x y z -> MOD (x, y, z))
       in
       compile_virtual_binary_int state result_reg ctor a b
-  | IR.UnaryOp (Normal.Neg, a) ->
+  | IR.UnaryOp (RefTracking.Neg, a) ->
       (* Negation is implemented as subtraction from zero. *)
       (state, [SUB (Const (ConstNum 0), Reg (RVMap.find (lift_value a) state.reg_of_var), result_reg)])
   | IR.Conditional (Normal.IfEq, a, b, e1, e2) ->
@@ -248,6 +248,8 @@ let rec compile_virtual_aux
       let (state, tail_asm) = compile_virtual_aux new_binding_state result_reg e2 in
       (state, head_asm @ tail_asm)
   | IR.ApplyKnown (g, g_args) ->
+      (* TODO: this looks an appropriate place to inline the zasm operators in place
+       * of __zml_op_add and friends. *)
       let arg_regs = List.map (fun v -> Reg (RVMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Const (MappedRoutine g), arg_regs, result_reg)])
   | IR.ApplyUnknown (g, g_args) ->
@@ -354,7 +356,7 @@ and compile_virtual_if state result_reg is_cmp_equality a b e1 e2 =
  * with an infinite number of registers (aka "local variables") available. *)
 let compile_virtual
   (f_args : sp_var_t list)      (* Function arguments *)
-  (f_body : IR.t)      (* Function body *)
+  (f_body : IR.t)               (* Function body *)
     : (VReg.t list)             (* Virtual registers assigned to function arguments *)
     * (VReg.t t list)           (* Generated virtual assembly *)
     * VRegState.t =             (* State of virtual register allocation *)

@@ -40,6 +40,17 @@ let untyped_expr_rhs n expr = untyped_expr expr (rhs_range n)
 
 let typed_expr_sym expr type_annot = typed_expr expr type_annot (symbol_range ())
 
+(* Convenience function for generating the expression tree associated with binary
+ * operator application. *)
+let untyped_binary_op (op_function : string) left_expr right_expr =
+  let op_expr = untyped_expr_rhs 2 (Var op_function) in
+  let left_apply_expr = untyped_expr (Apply (op_expr, left_expr)) {
+    fr_start = Parsing.rhs_start_pos 1;
+    fr_end   = Parsing.rhs_end_pos 2
+  } in
+  untyped_expr_sym (Apply (left_apply_expr, right_expr))
+
+
 (* When the user provides type expressions, we use the following hash table to associate
  * named type variables with abstract type variables. *)
 let tvar_map = Hashtbl.create 50
@@ -160,47 +171,45 @@ expr:
     { untyped_expr_sym (If ($2, $4, $6)) }
   | NOT expr
     %prec prec_unary_minus
-    { untyped_expr_sym (Apply ((BuiltinFunc Not), $2)) }
+    { let op_expr = untyped_expr_rhs 1 (Var Builtins.logic_not) in
+      untyped_expr_sym (Apply (op_expr, $2)) }
   | MINUS expr
     %prec prec_unary_minus
-    { untyped_expr_sym (Apply ((BuiltinFunc Neg), $2)) }
+    { let op_expr = untyped_expr_rhs 1 (Var Builtins.neg) in
+      untyped_expr_sym (Apply (op_expr, $2)) }
   | expr PLUS expr
-    { untyped_expr_sym (Apply (FuncExpr (
-        untyped_expr_sym (Apply (BuiltinFunc Add, $1))), $3)) }
+    { untyped_binary_op Builtins.add $1 $3 }
   | expr MINUS expr
-    { untyped_expr_sym (Apply (FuncExpr (
-        untyped_expr_sym (Apply (BuiltinFunc Sub, $1))), $3)) }
+    { untyped_binary_op Builtins.sub $1 $3 }
   | expr STAR expr
-    { untyped_expr_sym (Apply (FuncExpr (
-        untyped_expr_sym (Apply (BuiltinFunc Mul, $1))), $3)) }
+    { untyped_binary_op Builtins.mul $1 $3 }
   | expr SLASH expr
-    { untyped_expr_sym (Apply (FuncExpr (
-        untyped_expr_sym (Apply (BuiltinFunc Div, $1))), $3)) }
+    { untyped_binary_op Builtins.div $1 $3 }
   | expr MOD expr
-    { untyped_expr_sym (Apply (FuncExpr (
-        untyped_expr_sym (Apply (BuiltinFunc Mod, $1))), $3)) }
+    { untyped_binary_op Builtins.modulus $1 $3 }
   | expr EQ expr
-    { untyped_expr_sym (Apply (FuncExpr (
-        untyped_expr_sym (Apply (BuiltinFunc Eq, $1))), $3)) }
+    { untyped_binary_op Builtins.eq $1 $3 }
   | expr NEQ expr
-    { untyped_expr_sym (Apply (FuncExpr (
-        untyped_expr_sym (Apply (BuiltinFunc Neq, $1))), $3)) }
+    { untyped_binary_op Builtins.neq $1 $3 }
   | expr LEQ expr
-    { untyped_expr_sym (Apply (FuncExpr (
-        untyped_expr_sym (Apply (BuiltinFunc Leq, $1))), $3)) }
+    { untyped_binary_op Builtins.leq $1 $3 }
   | expr GEQ expr
-    { untyped_expr_sym (Apply (FuncExpr (
-        untyped_expr_sym (Apply (BuiltinFunc Geq, $1))), $3)) }
+    { untyped_binary_op Builtins.geq $1 $3 }
   | expr LT expr
-    { untyped_expr_sym (Apply (FuncExpr (
-        untyped_expr_sym (Apply (BuiltinFunc Less, $1))), $3)) }
+    { untyped_binary_op Builtins.less $1 $3 }
   | expr GT expr
-    { untyped_expr_sym (Apply (FuncExpr (
-        untyped_expr_sym (Apply (BuiltinFunc Greater, $1))), $3)) }
+    { untyped_binary_op Builtins.greater $1 $3 }
   | simple_expr DOT LPAREN seq_expr RPAREN LARROW expr
-    { untyped_expr_sym (Apply (FuncExpr (
-        untyped_expr_sym (Apply (FuncExpr (
-          untyped_expr_sym (Apply (BuiltinFunc ArraySet, $1))), $4))), $7)) }
+    { let op_expr         = untyped_expr_rhs 6 (Var Builtins.array_set) in
+      let apply_arg1_expr = untyped_expr (Apply (op_expr, $1)) {
+        fr_start = Parsing.rhs_start_pos 1;
+        fr_end   = Parsing.rhs_end_pos 2
+      } in
+      let apply_arg2_expr = untyped_expr (Apply (apply_arg1_expr, $4)) {
+        fr_start = Parsing.rhs_start_pos 1;
+        fr_end   = Parsing.rhs_end_pos 5
+      } in
+      untyped_expr_sym (Apply (apply_arg2_expr, $7)) }
   | error
     { let spos = Parsing.symbol_start_pos () in
       let epos = Parsing.symbol_end_pos () in
@@ -225,13 +234,17 @@ simple_expr:
   | IDENT
     { untyped_expr_sym (Var ($1)) }
   | simple_expr DOT LPAREN seq_expr RPAREN
-    { untyped_expr_sym (Apply (FuncExpr (
-        untyped_expr_sym (Apply (BuiltinFunc ArrayGet, $1))), $4)) }
-        
+    { let op_expr         = untyped_expr_rhs 2 (Var Builtins.array_get) in
+      let apply_arg1_expr = untyped_expr (Apply (op_expr, $1)) {
+        fr_start = Parsing.rhs_start_pos 1;
+        fr_end   = Parsing.rhs_end_pos   2
+      } in
+      untyped_expr_sym (Apply (apply_arg1_expr, $4)) }
+
 
 simple_expr_list:
   | simple_expr_list simple_expr
-    { untyped_expr_sym (Apply (FuncExpr $1, $2)) }
+    { untyped_expr_sym (Apply ($1, $2)) }
   | simple_expr
     { $1 }
 

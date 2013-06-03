@@ -51,12 +51,10 @@
 
 open Printf
 
-module SPVar     = Function.SPVar
-module SPVMap    = Function.SPVMap
-module SPVSet    = Set.Make(SPVar)
-type binary_op_t = Function.binary_op_t
-type unary_op_t  = Function.unary_op_t
-type cond_t      = Function.cond_t
+module SPVar  = Function.SPVar
+module SPVMap = Function.SPVMap
+module SPVSet = Set.Make(SPVar)
+type cond_t   = Function.cond_t
 
 
 module type OPAQUE_ID = sig
@@ -98,6 +96,17 @@ type sp_var_t =
   | Ref   of RefID.t
 
 let string_of_sp_var x = match x with Value v -> ValID.to_string v | Ref r -> RefID.to_string r
+
+
+type binary_op_t =
+  | Add   (* Integer addition *)
+  | Sub   (* Integer subtraction *)
+  | Mul   (* Integer multiplication *)
+  | Div   (* Integer division *)
+  | Mod   (* Integer modulus *)
+
+type unary_op_t =
+  | Neg   (* Integer negation *)
 
 
 type t = {
@@ -163,14 +172,14 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : stri
   | BinaryOp (op, a, b) ->
       let op_s =
         match op with
-        | Normal.Add -> "+"
-        | Normal.Sub -> "-"
-        | Normal.Mul -> "*"
-        | Normal.Div -> "/"
-        | Normal.Mod -> "%"
+        | Add -> "+"
+        | Sub -> "-"
+        | Mul -> "*"
+        | Div -> "/"
+        | Mod -> "%"
       in
       sprintf "(%s %s %s)"  (ValID.to_string a) op_s (ValID.to_string b)
-  | UnaryOp (Normal.Neg, a) -> sprintf "(- %s)" (ValID.to_string a)
+  | UnaryOp (Neg, a) -> sprintf "(- %s)" (ValID.to_string a)
   | Conditional (cond, a, b, c, d) ->
       sprintf "%sif %s %s %s then\n%s%s\n%selse\n%s%s"
         (make_indent indent_level)
@@ -271,8 +280,6 @@ let rec identify_ref_clones ?(is_binding_expr=false) (expr : Function.t) : t =
     match expr with
     | Function.Unit                -> Unit
     | Function.Int x               -> Int x
-    | Function.BinaryOp (op, a, b) -> BinaryOp (op, ValID.of_var a, ValID.of_var b)
-    | Function.UnaryOp (op, a)     -> UnaryOp (op, ValID.of_var a)
     | Function.Conditional (cond, a, b, e1, e2) ->
         Conditional (cond, ValID.of_var a, ValID.of_var b,
           identify_ref_clones ~is_binding_expr e1,

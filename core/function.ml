@@ -41,9 +41,7 @@ open Printf
 module VarID = Normal.VarID
 module VMap  = Normal.VMap
 module VSet  = Normal.VSet
-type binary_op_t = Normal.binary_op_t
-type unary_op_t  = Normal.unary_op_t
-type cond_t      = Normal.cond_t
+type cond_t  = Normal.cond_t
 
 
 type storage_t =
@@ -62,13 +60,10 @@ end
 module SPVMap = Map.Make(SPVar)
 
 type var_t = SPVar.t
-
-
+ 
 type t =
   | Unit                                            (* Unit literal *)
   | Int of int                                      (* Integer constant *)
-  | BinaryOp of binary_op_t * var_t * var_t         (* Binary integer operation *)
-  | UnaryOp of unary_op_t * var_t                   (* Unary integer operation *)
   | Conditional of cond_t * var_t * var_t * t * t   (* Conditional form *)
   | Var of var_t                                    (* Bound variable reference (not a known function) *)
   | KnownFuncVar of var_t                           (* Known function reference *)
@@ -117,8 +112,10 @@ let storage_of_type tp =
   match tp with
   | Type.Unit | Type.Bool _ | Type.Int _ ->
       Value
-  | Type.Arrow _ | Type.Array _ ->
+  | Type.Arrow _ ->
       (* Any first-class treatment of a function results in a closure reference. *)
+      Ref
+  | Type.Array _ ->
       Ref
   | Type.Var _ ->
       (* Polymorphic type... *)
@@ -140,17 +137,6 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : stri
   match expr with
   | Unit -> "()"
   | Int i -> string_of_int i
-  | BinaryOp (op, a, b) ->
-      let op_s =
-        match op with
-        | Normal.Add -> "+"
-        | Normal.Sub -> "-"
-        | Normal.Mul -> "*"
-        | Normal.Div -> "/"
-        | Normal.Mod -> "%"
-      in
-      sprintf "(%s %s %s)"  (SPVar.to_string a) op_s (SPVar.to_string b)
-  | UnaryOp (Normal.Neg, a) -> sprintf "(- %s)" (SPVar.to_string a)
   | Conditional (cond, a, b, c, d) ->
       sprintf "%sif %s %s %s then\n%s%s\n%selse\n%s%s"
         (make_indent indent_level)
@@ -238,6 +224,38 @@ let add_function_def (id : SPVar.t) (def : function_t) : unit =
   function_defs := SPVMap.add id def !function_defs
 
 
+(* Look up a function definition in the list of known functions.
+ *
+ * (This may fail when looking up a recursive function definition from
+ * the context of the recursive function.  Other failures are
+ * probably bugs...) *)
+let find_function_def_by_id (id : SPVar.t) : function_t option =
+  try
+    Some (SPVMap.find id !function_defs)
+  with Not_found ->
+    None
+
+
+(* Locate up a named external function in the list of known functions. *)
+let find_ext_function_def_by_name (asm_name : string) : SPVar.t =
+  let result =
+    SPVMap.fold
+      (fun id def result_opt ->
+        match def.f_impl with
+        | ExtFunc (name, _) when name = asm_name ->
+            Some id
+        | _ ->
+            result_opt)
+      !function_defs
+      None
+  in
+  match result with
+  | None ->
+      let () = Printf.fprintf stderr "Missing asm function: %s\n" asm_name in
+      assert false
+  | Some x ->
+      x
+
 
 (* Compute the set of all free variables found in an expression. *)
 let rec free_variables ?(acc=VSet.empty) (bound_vars : VSet.t) (expr : Normal.t) : VSet.t =
@@ -250,10 +268,6 @@ let rec free_variables ?(acc=VSet.empty) (bound_vars : VSet.t) (expr : Normal.t)
   match expr with
   | Normal.Unit | Normal.Int _ | Normal.External _ ->
       acc
-  | Normal.BinaryOp (_, a, b) ->
-      accum_free [a; b]
-  | Normal.UnaryOp (_, a) ->
-      accum_free [a]
   | Normal.Var a ->
       accum_free [a]
   | Normal.Conditional (_, a, b, e1, e2) ->
@@ -277,12 +291,6 @@ let rec free_variables ?(acc=VSet.empty) (bound_vars : VSet.t) (expr : Normal.t)
       VSet.union g_body_free g_scope_free
   | Normal.Apply (g, g_args) ->
       accum_free (g :: g_args)
-  | Normal.ArrayMake (len, v) ->
-      accum_free [len; v]
-  | Normal.ArrayGet (a, i) ->
-      accum_free [a; i]
-  | Normal.ArraySet (a, i, v) ->
-      accum_free [a; i; v]
 
 
 (* Construct a closure definition.  The code which defines the function is transformed into code which
@@ -408,7 +416,7 @@ let make_partial_application
  * simply calling it with a full argument list. *)
 let rec is_first_class f_id (expr : Normal.t) : bool =
   match expr with
-  | Normal.Unit | Normal.Int _ | Normal.BinaryOp _ | Normal.UnaryOp _ | Normal.ArrayGet (_, _) ->
+  | Normal.Unit | Normal.Int _ ->
       false
   | Normal.Conditional (cond, a, b, e1, e2) ->
       (is_first_class f_id e1) || (is_first_class f_id e2)
@@ -426,8 +434,36 @@ let rec is_first_class f_id (expr : Normal.t) : bool =
        * argument, but that optimization would require a lot of extra analysis to figure out the
        * contexts in which the higher-order function is invoked.) *)
       List.mem f_id g_args
-  | Normal.ArrayMake (_, v) | Normal.ArraySet (_, _, v) ->
-      v = f_id
+
+
+(* array_get operations take two different code paths: one for retrieving an element from
+ * a reference array and one for retrieving an element from a value array.  Types are erased
+ * in Function.t, so this is the last opportunity to differentiate based on type. *)
+let rewrite_type_differentiated_builtins
+  (sp_f_id   : SPVar.t)
+  (f_args    : VarID.t list)
+  (sp_f_args : SPVar.t list)
+    : t =
+  let orig_def_opt = find_function_def_by_id sp_f_id in
+  match orig_def_opt with
+  | Some {f_impl = ExtFunc (asm_name, _); _} when asm_name = Builtins.array_get ->
+      (* FIXME: Each of these lookups is O(number of functions in program).  They should be collected
+       * once and cached. *)
+      let array_get_val = find_ext_function_def_by_name Builtins.array_get_val in
+      let array_get_ref = find_ext_function_def_by_name Builtins.array_get_ref in
+      begin match f_args with
+      | {VarID.tp = Type.Array contained_type; _} :: _ ->
+          begin match storage_of_type contained_type with
+          | Ref ->
+              ApplyKnown (array_get_ref, sp_f_args)
+          | Value ->
+              ApplyKnown (array_get_val, sp_f_args)
+          end
+      | _ ->
+          assert false
+      end
+  | _ ->
+      ApplyKnown (sp_f_id, sp_f_args)
 
 
 type call_t = Known | Closure of var_t
@@ -435,14 +471,12 @@ type call_t = Known | Closure of var_t
 (* Extract function bodies from the expression tree, storing them in the [function_defs] map. *)
 let rec extract_functions_aux
   (callable_ids : call_t VMap.t)  (* Function ids which could be referenced in this expr *)
-  (normal_expr : Normal.t)        (* Expression to process *)
+  (normal_expr  : Normal.t)       (* Expression to process *)
     : t =                         (* Resulting expression, with functions extracted *)
   match normal_expr with
-  | Normal.Unit                -> Unit
-  | Normal.Int x               -> Int x
-  | Normal.BinaryOp (op, a, b) -> BinaryOp (op, infer_storage a, infer_storage b)
-  | Normal.UnaryOp (op, a)     -> UnaryOp  (op, infer_storage a)
-  | Normal.Var a ->
+  | Normal.Unit  -> Unit
+  | Normal.Int x -> Int x
+  | Normal.Var a -> 
       begin try
         (* If an identifier was closure-converted, here we use a reference to the closure array
          * instead of the converted identifier. *)
@@ -514,29 +548,13 @@ let rec extract_functions_aux
         begin try
           match VMap.find f_id callable_ids with
           | Known ->
-              ApplyKnown (value_var f_id, sp_f_args)
+              rewrite_type_differentiated_builtins (value_var f_id) f_args sp_f_args
           | Closure closure_id ->
               make_closure_application closure_id sp_f_args
         with Not_found ->
           (* "Unknown" function application, i.e. call-by-function-pointer. *)
           make_closure_application (ref_var f_id) sp_f_args
         end
-  | Normal.ArrayMake (len, value) ->
-      ArrayMake (value_var len, infer_storage value)
-  | Normal.ArrayGet (arr, index) ->
-      begin match arr.VarID.tp with
-      | Type.Array contained_type ->
-          begin match storage_of_type contained_type with
-          | Ref ->
-              ArrayGetRef (ref_var arr, value_var index)
-          | Value ->
-              ArrayGetVal (ref_var arr, value_var index)
-          end
-      | _ ->
-          assert false
-      end
-  | Normal.ArraySet (arr, index, value) ->
-      ArraySet (ref_var arr, value_var index, infer_storage value)
 
 
 (* Rewrite a normalized expression tree as a list of function definitions and an entry point. *)

@@ -12,34 +12,12 @@ type parser_meta_t = {
   type_annot : Type.type_scheme_t option;   (** Type annotation for this expression, if provided *)
 }
 
-type builtin_func_t =
-  | Eq
-  | Neq
-  | Leq
-  | Geq
-  | Less
-  | Greater
-  | Add
-  | Sub
-  | Mul
-  | Div
-  | Mod
-  | Not
-  | Neg
-(*  | ArrayMake *)
-  | ArrayGet
-  | ArraySet
-
 
 type t = {
 (** Type [t] represents a node in the AST, as determined by the first pass of parsing the source file. *)
   expr        : expr_t;         (** Expression parsed at this node *)
   parser_info : parser_meta_t   (** Additional metadata recorded by the parser *)
 }
-
-and func_t =
-  | BuiltinFunc of builtin_func_t
-  | FuncExpr of t
 
 and expr_t =
 (** [expr_t] defines all the expressions which are supported at the syntax level. *)
@@ -53,7 +31,7 @@ and expr_t =
   | Lambda of string * t                        (* unary lambda definition *)
   | External of string * Type.type_scheme_t *
                 string * t                      (* external (assembly passthrough) function declaration *)
-  | Apply of func_t * t                         (* application of a function to a single argument *)
+  | Apply of t * t                              (* application of a function to a single argument *)
 
 
 (* Construct an AST node with no type information *)
@@ -67,25 +45,6 @@ let typed_expr expr type_annot range = {
   expr;
   parser_info = {range; type_annot = Some type_annot}
 }
-
-let print_builtin a = 
-  match a with
-  | Eq          -> "Eq"
-  | Neq         -> "Neq"
-  | Leq         -> "Leq"
-  | Geq         -> "Geq"
-  | Less        -> "Less"
-  | Greater     -> "Greater"
-  | Add         -> "Add"
-  | Sub         -> "Sub"
-  | Mul         -> "Mul"
-  | Div         -> "Div"
-  | Mod         -> "Mod"
-  | Not         -> "Not"
-  | Neg         -> "Neg"
-(*  | ArrayMake   -> "ArrayMake" *)
-  | ArrayGet    -> "ArrayGet"
-  | ArraySet    -> "ArraySet"
 
 
 let rec print_ast (ast : t) =
@@ -116,12 +75,7 @@ let rec print_ast (ast : t) =
     | External (a, a_typ, b, c) ->
       sprintf "External (%s, %s, %s)" a b (print_ast c)
     | Apply (f, arg) ->
-      let func_str =
-        match f with
-        | BuiltinFunc a -> print_builtin a
-        | FuncExpr    a -> print_ast a
-      in
-      sprintf "Apply (%s %s)" func_str (print_ast arg)
+      sprintf "Apply (%s %s)" (print_ast f) (print_ast arg)
   in
   let range_s =
     let print_pos pos =
