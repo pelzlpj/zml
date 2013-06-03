@@ -98,17 +98,6 @@ type sp_var_t =
 let string_of_sp_var x = match x with Value v -> ValID.to_string v | Ref r -> RefID.to_string r
 
 
-type binary_op_t =
-  | Add   (* Integer addition *)
-  | Sub   (* Integer subtraction *)
-  | Mul   (* Integer multiplication *)
-  | Div   (* Integer division *)
-  | Mod   (* Integer modulus *)
-
-type unary_op_t =
-  | Neg   (* Integer negation *)
-
-
 type t = {
   (* Locally-unique identifier attached to this expression, for ease of constructing
    * a control-flow graph.  (The identifiers will be dropped in iR.ml.) *)
@@ -119,8 +108,6 @@ type t = {
 and expr_t =
   | Unit                                        (* Unit literal *)
   | Int of int                                  (* Integer constant *)
-  | BinaryOp of binary_op_t * ValID.t * ValID.t (* Binary integer operation *)
-  | UnaryOp of unary_op_t * ValID.t             (* Unary integer operation *)
   | Conditional of cond_t * ValID.t * ValID.t
       * t * t                                   (* Conditional form *)
   | Var of sp_var_t                             (* Bound variable reference (not a known function) *)
@@ -171,17 +158,6 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : stri
   match expr.expr with
   | Unit -> "()"
   | Int i -> string_of_int i
-  | BinaryOp (op, a, b) ->
-      let op_s =
-        match op with
-        | Add -> "+"
-        | Sub -> "-"
-        | Mul -> "*"
-        | Div -> "/"
-        | Mod -> "%"
-      in
-      sprintf "(%s %s %s)"  (ValID.to_string a) op_s (ValID.to_string b)
-  | UnaryOp (Neg, a) -> sprintf "(- %s)" (ValID.to_string a)
   | Conditional (cond, a, b, c, d) ->
       sprintf "%sif %s %s %s then\n%s%s\n%selse\n%s%s"
         (make_indent indent_level)
@@ -390,7 +366,7 @@ let rec make_control_flow_graph
   (expr : t)
     : cfn_t TMap.t =
   match expr.expr with
-  | Unit | Int _ | BinaryOp _ | UnaryOp _ | KnownFuncVar _ | ArrayAlloc _ ->
+  | Unit | Int _ | KnownFuncVar _ | ArrayAlloc _ ->
       TMap.add expr {
           successors = list_of_opt state.scope_expr;
           inputs     = RSet.empty;
@@ -508,7 +484,7 @@ let rec insert_ref_release_aux
         match unused_binding_opt with
         | None   -> e2_with_release
         | Some r -> insert_release_let r e2_with_release)}
-  | Unit | Int _ | BinaryOp _ | UnaryOp _ | Var _ | KnownFuncVar _
+  | Unit | Int _ | Var _ | KnownFuncVar _
   | ApplyKnown _ | ApplyUnknown _ | ArrayAlloc _ | ArrayInitOne _ | ArrayMake _
   | ArraySet _ | ArrayGetVal _ | ArrayGetRef _ | RefClone _ | RefRelease _ ->
       begin match curr_binding with

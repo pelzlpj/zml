@@ -219,14 +219,14 @@ let rec compile_virtual_aux
   | IR.BinaryOp (op, a, b) ->
       let ctor =
         match op with
-        | RefTracking.Add -> (fun x y z -> ADD (x, y, z))
-        | RefTracking.Sub -> (fun x y z -> SUB (x, y, z))
-        | RefTracking.Mul -> (fun x y z -> MUL (x, y, z))
-        | RefTracking.Div -> (fun x y z -> DIV (x, y, z))
-        | RefTracking.Mod -> (fun x y z -> MOD (x, y, z))
+        | IR.Add -> (fun x y z -> ADD (x, y, z))
+        | IR.Sub -> (fun x y z -> SUB (x, y, z))
+        | IR.Mul -> (fun x y z -> MUL (x, y, z))
+        | IR.Div -> (fun x y z -> DIV (x, y, z))
+        | IR.Mod -> (fun x y z -> MOD (x, y, z))
       in
       compile_virtual_binary_int state result_reg ctor a b
-  | IR.UnaryOp (RefTracking.Neg, a) ->
+  | IR.UnaryOp (IR.Neg, a) ->
       (* Negation is implemented as subtraction from zero. *)
       (state, [SUB (Const (ConstNum 0), Reg (RVMap.find (lift_value a) state.reg_of_var), result_reg)])
   | IR.Conditional (Normal.IfEq, a, b, e1, e2) ->

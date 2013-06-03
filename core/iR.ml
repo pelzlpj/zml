@@ -28,9 +28,18 @@ module ValID     = RefTracking.ValID
 module RefID     = RefTracking.RefID
 module VMap      = RefTracking.VMap
 type sp_var_t    = RefTracking.sp_var_t
-type binary_op_t = RefTracking.binary_op_t
-type unary_op_t  = RefTracking.unary_op_t
 type cond_t      = RefTracking.cond_t
+
+
+type binary_op_t =
+  | Add   (* Integer addition *)
+  | Sub   (* Integer subtraction *)
+  | Mul   (* Integer multiplication *)
+  | Div   (* Integer division *)
+  | Mod   (* Integer modulus *)
+
+type unary_op_t =
+  | Neg   (* Integer negation *)
 
 
 type t =
@@ -84,22 +93,22 @@ let rewrite_apply_known function_map f (args : sp_var_t list) =
   match (VMap.find f function_map, args) with
   | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
       [RT.Value a; RT.Value b]) when asm_name = Builtins.add ->
-      BinaryOp (RT.Add, a, b)
+      BinaryOp (Add, a, b)
   | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
       [RT.Value a; RT.Value b]) when asm_name = Builtins.sub ->
-      BinaryOp (RT.Sub, a, b)
+      BinaryOp (Sub, a, b)
   | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
       [RT.Value a; RT.Value b]) when asm_name = Builtins.mul ->
-      BinaryOp (RT.Mul, a, b)
+      BinaryOp (Mul, a, b)
   | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
       [RT.Value a; RT.Value b]) when asm_name = Builtins.div ->
-      BinaryOp (RT.Div, a, b)
+      BinaryOp (Div, a, b)
   | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
       [RT.Value a; RT.Value b]) when asm_name = Builtins.modulus ->
-      BinaryOp (RT.Mod, a, b)
+      BinaryOp (Mod, a, b)
   | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
       [RT.Value a]) when asm_name = Builtins.neg ->
-      UnaryOp (RT.Neg, a)
+      UnaryOp (Neg, a)
   | _ ->
       ApplyKnown (f, args)
 
@@ -113,8 +122,6 @@ let rec rewrite (functions : RefTracking.function_t VMap.t) (id_expr : RefTracki
   match id_expr.RT.expr with
   | RT.Unit                             -> Unit
   | RT.Int x                            -> Int x
-  | RT.BinaryOp (op, a, b)              -> BinaryOp (op, a, b)
-  | RT.UnaryOp (op, a)                  -> UnaryOp (op, a)
   | RT.Conditional (cond, a, b, e1, e2) -> Conditional (cond, a, b, recur e1, recur e2)
   | RT.Var v                            -> Var v
   | RT.KnownFuncVar v                   -> KnownFuncVar v
