@@ -55,6 +55,9 @@ let array_alloc    = "__zml_array_alloc"
 let array_init_one = "__zml_array_init_one"
 let array_make     = "__zml_pseudofunc_array_make"
 
+let ref_clone   = "__zml_ref_clone"
+let ref_release = "__zml_ref_release"
+
 
 module TVSet = Type.TVSet
 
@@ -133,6 +136,13 @@ let type_env =
 
     (* val array_get_ref : int array -> int -> int *)
     (array_get_ref, Type.ForAll (TVSet.empty,
-      Type.Arrow (Type.Array Type.Int, Type.Arrow (Type.Int, Type.Int))))
+      Type.Arrow (Type.Array Type.Int, Type.Arrow (Type.Int, Type.Int))));
+
+    (* val ref_clone : int -> int *)
+    (ref_clone, Type.ForAll (TVSet.empty, Type.Arrow (Type.Int, Type.Int)));
+
+    (* val ref_release : int -> unit *)
+    (ref_release, Type.ForAll (TVSet.empty, Type.Arrow (Type.Int, Type.Unit)))
+
   ]
 

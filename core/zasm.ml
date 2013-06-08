@@ -204,7 +204,44 @@ type compile_state_t = {
   label_count: int              (* Number of labels emitted *)
 }
 
+
+(* Compile an ApplyKnown form, recognizing certain built-in forms and rewriting them
+ * as necessary to satisfy requirements of the runtime API. *)
+let compile_virtual_apply_known program state result_reg g g_args =
+  match (VMap.find g program.IR.functions).IR.f_impl, g_args with
+  | IR.ExtFunc (asm_name, _), [len; init_val] when asm_name = Builtins.array_make ->
+      (* zml_array_make requires the caller to pass a boolean that indicates
+       * whether the array contains value or reference types. *)
+      let is_ref =
+        match init_val with
+        | RefTracking.Value _ -> 0
+        | RefTracking.Ref _   -> 1
+      in
+      (state, [CALL_VS2 (Const (AsmRoutine Builtins.array_make), [
+        Reg (RVMap.find len state.reg_of_var);
+        Reg (RVMap.find init_val state.reg_of_var);
+        Const (ConstNum is_ref)],
+      result_reg)])
+  | IR.ExtFunc (asm_name, _), [arr; index; v] when asm_name = Builtins.array_set ->
+      (* zml_array_set branches to either zml_array_set_value or zml_array_set_ref,
+       * depending on whether the set value is a value or reference type. *)
+      let routine =
+        match v with
+        | RefTracking.Value _ -> Builtins.array_set_val
+        | RefTracking.Ref _   -> Builtins.array_set_ref
+      in
+      (state, [CALL_VS2 (Const (AsmRoutine routine), [
+        Reg (RVMap.find arr state.reg_of_var);
+        Reg (RVMap.find index state.reg_of_var);
+        Reg (RVMap.find v state.reg_of_var)],
+      result_reg)])
+  | _ ->
+      let arg_regs = List.map (fun v -> Reg (RVMap.find v state.reg_of_var)) g_args in
+      (state, [CALL_VS2 (Const (MappedRoutine g), arg_regs, result_reg)])
+
+
 let rec compile_virtual_aux
+  (program : IR.program_t)    (* List of all functions, provided as context *)
   (state : compile_state_t)   (* Compilation context *)
   (result_reg)                (* Register which should be used to store the result *)
   (expr : IR.t)               (* Expression to be compiled *)
@@ -213,7 +250,7 @@ let rec compile_virtual_aux
   match expr with
   | IR.Unit ->
       (* For now we're treating unit as integer zero.  It shouldn't matter. *)
-      compile_virtual_aux state result_reg (IR.Int 0)
+      compile_virtual_aux program state result_reg (IR.Int 0)
   | IR.Int i ->
       (state, [STORE (result_reg, Const (ConstNum i))])
   | IR.BinaryOp (op, a, b) ->
@@ -230,9 +267,9 @@ let rec compile_virtual_aux
       (* Negation is implemented as subtraction from zero. *)
       (state, [SUB (Const (ConstNum 0), Reg (RVMap.find (lift_value a) state.reg_of_var), result_reg)])
   | IR.Conditional (Normal.IfEq, a, b, e1, e2) ->
-      compile_virtual_if state result_reg true a b e1 e2
+      compile_virtual_if program state result_reg true a b e1 e2
   | IR.Conditional (Normal.IfLess, a, b, e1, e2) ->
-      compile_virtual_if state result_reg false a b e1 e2
+      compile_virtual_if program state result_reg false a b e1 e2
   | IR.Var a ->
       (state, [LOAD (RVMap.find a state.reg_of_var, result_reg)])
   | IR.KnownFuncVar v ->
@@ -243,57 +280,16 @@ let rec compile_virtual_aux
        * [e1] result register while compiling [e2]. *)
       let (next_state, head_result_reg) = VRegState.next state.reg_state in
       let state = {state with reg_state = next_state} in
-      let (state, head_asm) = compile_virtual_aux state head_result_reg e1 in
+      let (state, head_asm) = compile_virtual_aux program state head_result_reg e1 in
       let new_binding_state = {state with reg_of_var = RVMap.add a head_result_reg state.reg_of_var} in
-      let (state, tail_asm) = compile_virtual_aux new_binding_state result_reg e2 in
+      let (state, tail_asm) = compile_virtual_aux program new_binding_state result_reg e2 in
       (state, head_asm @ tail_asm)
   | IR.ApplyKnown (g, g_args) ->
-      let arg_regs = List.map (fun v -> Reg (RVMap.find v state.reg_of_var)) g_args in
-      (state, [CALL_VS2 (Const (MappedRoutine g), arg_regs, result_reg)])
+      compile_virtual_apply_known program state result_reg g g_args
   | IR.ApplyUnknown (g, g_args) ->
       let g_reg    = RVMap.find (lift_value g) state.reg_of_var in
       let arg_regs = List.map (fun v -> Reg (RVMap.find v state.reg_of_var)) g_args in
       (state, [CALL_VS2 (Reg g_reg, arg_regs, result_reg)])
-  | IR.ArrayMake (len, v) ->
-      let is_ref =
-        match v with
-        | RefTracking.Value _ -> 0
-        | RefTracking.Ref _   -> 1
-      in
-      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_create"), [
-        Reg (RVMap.find (lift_value len) state.reg_of_var);
-        Reg (RVMap.find v state.reg_of_var);
-        Const (ConstNum is_ref)],
-      result_reg)])
-  | IR.ArraySet (arr, index, v) ->
-      let routine =
-        match v with
-        | RefTracking.Value _ -> "zml_array_set_value"
-        | RefTracking.Ref _   -> "zml_array_set_ref"
-      in
-      (state, [CALL_VS2 (Const (AsmRoutine routine), [
-        Reg (RVMap.find (lift_ref arr) state.reg_of_var);
-        Reg (RVMap.find (lift_value index) state.reg_of_var);
-        Reg (RVMap.find v state.reg_of_var)],
-      result_reg)])
-  | IR.ArrayGetVal (arr, index) ->
-      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_get_value"), [
-        Reg (RVMap.find (lift_ref arr) state.reg_of_var);
-        Reg (RVMap.find (lift_value index) state.reg_of_var)],
-      result_reg)])
-  | IR.ArrayGetRef (arr, index) ->
-      (state, [CALL_VS2 (Const (AsmRoutine "zml_array_get_ref"), [
-        Reg (RVMap.find (lift_ref arr) state.reg_of_var);
-        Reg (RVMap.find (lift_value index) state.reg_of_var)],
-      result_reg)])
-  | IR.RefClone r ->
-      (state, [CALL_VS2 (Const (AsmRoutine "zml_ref_clone"),
-        [Reg (RVMap.find (lift_ref r) state.reg_of_var)],
-      result_reg)])
-  | IR.RefRelease r ->
-      (state, [CALL_VS2 (Const (AsmRoutine "zml_ref_release"),
-        [Reg (RVMap.find (lift_ref r) state.reg_of_var)],
-      result_reg)])
 
 
 (* Compile a binary integer operation. *)
@@ -304,7 +300,7 @@ and compile_virtual_binary_int state result_reg f a b = (
 )
 
 (* Compile an IfEq or IfLess form. *)
-and compile_virtual_if state result_reg is_cmp_equality a b e1 e2 =
+and compile_virtual_if program state result_reg is_cmp_equality a b e1 e2 =
   (* Compiles down to assembly of this form:
    *    je a b ?true_label
    *    (code for e2)
@@ -313,8 +309,8 @@ and compile_virtual_if state result_reg is_cmp_equality a b e1 e2 =
    *    (code_for_e1)
    * exit_label:
    *)    
-  let (state, true_branch)  = compile_virtual_aux state result_reg e1 in
-  let (state, false_branch) = compile_virtual_aux state result_reg e2 in
+  let (state, true_branch)  = compile_virtual_aux program state result_reg e1 in
+  let (state, false_branch) = compile_virtual_aux program state result_reg e2 in
   let true_label = state.label_count in
   let exit_label = true_label + 1 in
   let branch_inst =
@@ -337,6 +333,7 @@ and compile_virtual_if state result_reg is_cmp_equality a b e1 e2 =
 (* Compile a function to "virtual" Z5 assembly.  This is Z-machine assembly
  * with an infinite number of registers (aka "local variables") available. *)
 let compile_virtual
+  (program : IR.program_t)      (* List of all functions, provided as context *)
   (f_args : sp_var_t list)      (* Function arguments *)
   (f_body : IR.t)               (* Function body *)
     : (VReg.t list)             (* Virtual registers assigned to function arguments *)
@@ -359,7 +356,7 @@ let compile_virtual
     {reg_of_var = RVMap.empty; reg_state; label_count = 0}
     f_args
   in
-  let (state, assembly) = compile_virtual_aux init_state result_reg f_body in
+  let (state, assembly) = compile_virtual_aux program init_state result_reg f_body in
   (List.map (fun x -> RVMap.find x state.reg_of_var) f_args,
     assembly @ [RET (Reg result_reg)],
     state.reg_state)
@@ -706,7 +703,11 @@ let color_graph (args : VReg.t list) color_count graph =
 
 
 (* Rewrite a fragment of assembly, applying the mapping from virtual registers to physical registers. *)
-let rec subst_registers (acc : ZReg.t t list) (subst : ZReg.t VRegMap.t) (asm : VReg.t t list) : ZReg.t t list =
+let rec subst_registers
+  (acc   : ZReg.t t list)
+  (subst : ZReg.t VRegMap.t)
+  (asm   : VReg.t t list)
+    : ZReg.t t list =
   let subst_reg (x : VReg.t) : ZReg.t =
     try
       VRegMap.find x subst
@@ -759,7 +760,7 @@ let inject_load ~spilled_reg_offsets ~reg_alloc_state ~reg ~root_ref =
   if VRegMap.mem reg spilled_reg_offsets then
     let (reg_alloc_state, new_reg) = VRegState.next reg_alloc_state in
     let load_asm = [
-      CALL_VS2 (Const (AsmRoutine "zml_array_get"),
+      CALL_VS2 (Const (AsmRoutine Builtins.array_get_val),
         [Reg root_ref; Const (ConstNum (VRegMap.find reg spilled_reg_offsets))], new_reg)
     ] in
     (reg_alloc_state, Reg new_reg, load_asm)
@@ -773,7 +774,7 @@ let inject_store ~spilled_reg_offsets ~reg_alloc_state ~reg ~root_ref =
      * precedes this injected assembly *)
     let (reg_alloc_state, written_reg) = VRegState.next reg_alloc_state in
     let store_asm = [
-      CALL_VS2 (Const (AsmRoutine "zml_array_set_value"),
+      CALL_VS2 (Const (AsmRoutine Builtins.array_set_val),
         [Reg root_ref; Const (ConstNum (VRegMap.find reg spilled_reg_offsets));
           Reg written_reg], written_reg)
     ] in
@@ -853,7 +854,7 @@ let spill_to_heap
     (0, VRegMap.empty)
   in
   let header = [
-    CALL_VS2 (Const (AsmRoutine "zml_array_alloc"),
+    CALL_VS2 (Const (AsmRoutine Builtins.array_alloc),
       [Const (ConstNum (VRegSet.cardinal spill_regs))], root_ref)
   ] in
   (* Insert loads and stores whenever the spilled registers are accessed. *)
@@ -930,7 +931,7 @@ let spill_to_heap
           | Const _ ->
               (reg_alloc_state,
                 RET op ::
-                CALL_VS2 (Const (AsmRoutine "zml_ref_release"), [Reg root_ref], root_ref) ::
+                CALL_VS2 (Const (AsmRoutine Builtins.ref_release), [Reg root_ref], root_ref) ::
                 asm_acc)
           | Reg r ->
               let (reg_alloc_state, op, load_asm) =
@@ -938,7 +939,7 @@ let spill_to_heap
               in
               (reg_alloc_state,
                 RET op ::
-                CALL_VS2 (Const (AsmRoutine "zml_ref_release"), [Reg root_ref], root_ref) ::
+                CALL_VS2 (Const (AsmRoutine Builtins.ref_release), [Reg root_ref], root_ref) ::
                 (List.rev_append load_asm asm_acc))
           end
       | (JUMP label as inst) | (Label label as inst) ->
@@ -986,9 +987,13 @@ let rec alloc_registers
       alloc_registers ~spilled_regs precolored_regs asm reg_alloc_state
 
 
-(* Compile a function, yielding an assembly listing for the function body. *)
-let compile (f_args : sp_var_t list) (f_body : IR.t) : ZReg.t t list =
-  let virtual_args, virtual_asm, vreg_alloc_state = compile_virtual f_args f_body in
+(* Compile an individual function, yielding an assembly listing for the function body. *)
+let compile
+  (program : IR.program_t)    (* List of all functions, provided as context *)
+  (f_args : sp_var_t list)    (* Arguments to the function being compiled *)
+  (f_body : IR.t)             (* Body of the function being compiled *)
+    : ZReg.t t list =
+  let virtual_args, virtual_asm, vreg_alloc_state = compile_virtual program f_args f_body in
   alloc_registers virtual_args virtual_asm vreg_alloc_state
 
 

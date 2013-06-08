@@ -115,12 +115,6 @@ and expr_t =
   | Let of sp_var_t * t * t                     (* Let binding for a variable *)
   | ApplyKnown of ValID.t * (sp_var_t list)     (* Application of "known" function *)
   | ApplyUnknown of ValID.t * (sp_var_t list)   (* Application of an "unknown" function (computed address) *)
-  | ArrayMake of ValID.t * sp_var_t             (* Construct a new array (len, value) *)
-  | ArraySet of RefID.t * ValID.t * sp_var_t    (* Store a ref or value in an array (arr, index, ref) *)
-  | ArrayGetVal of RefID.t * ValID.t            (* Get a value from an array (arr, index) *)
-  | ArrayGetRef of RefID.t * ValID.t            (* Get a reference from an array (arr, index) *)
-  | RefClone of RefID.t                         (* Create new references which points to same object *)
-  | RefRelease of RefID.t                       (* Release a reference *)
 
 
 
@@ -192,18 +186,6 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : stri
       sprintf "apply(%s %s)" (ValID.to_string f) (String.concat " " (List.map string_of_sp_var args))
   | ApplyUnknown (f, args) ->
       sprintf "apply_unk(%s %s)" (ValID.to_string f) (String.concat " " (List.map string_of_sp_var args))
-  | ArrayMake (a, b) ->
-      sprintf "array_make(%s, %s)" (ValID.to_string a) (string_of_sp_var b)
-  | ArraySet (a, b, c) ->
-      sprintf "array_set(%s, %s, %s)" (RefID.to_string a) (ValID.to_string b) (string_of_sp_var c)
-  | ArrayGetVal (a, b) ->
-      sprintf "array_get_val(%s, %s)" (RefID.to_string a) (ValID.to_string b)
-  | ArrayGetRef (a, b) ->
-      sprintf "array_get_ref(%s, %s)" (RefID.to_string a) (ValID.to_string b)
-  | RefClone r ->
-      sprintf "clone(%s)" (RefID.to_string r)
-  | RefRelease r ->
-      sprintf "release(%s)" (RefID.to_string r)
 
 
 let string_of_function id (f : function_t) : string =
@@ -258,8 +240,11 @@ let rec identify_ref_clones ?(is_binding_expr=false) (expr : Function.t) : t =
     | Function.Var a ->
         if is_binding_expr then
           begin match a.SPVar.storage with 
-          | Function.Value -> Var (infer_sp_var a)
-          | Function.Ref   -> RefClone (RefID.of_var a)
+          | Function.Value ->
+              Var (infer_sp_var a)
+          | Function.Ref   -> 
+              let ref_clone = Function.find_ext_function_def_by_name Builtins.ref_clone in
+              ApplyKnown (ValID.of_var ref_clone, [Ref (RefID.of_var a)])
           end
         else
           Var (infer_sp_var a)
@@ -271,10 +256,6 @@ let rec identify_ref_clones ?(is_binding_expr=false) (expr : Function.t) : t =
           identify_ref_clones ~is_binding_expr e2)
     | Function.ApplyKnown (f, f_args)   -> ApplyKnown (ValID.of_var f, List.map infer_sp_var f_args)
     | Function.ApplyUnknown (f, f_args) -> ApplyUnknown (ValID.of_var f, List.map infer_sp_var f_args)
-    | Function.ArrayMake (len, v)       -> ArrayMake (ValID.of_var len, infer_sp_var v)
-    | Function.ArraySet (arr, i, v)     -> ArraySet (RefID.of_var arr, ValID.of_var i, infer_sp_var v)
-    | Function.ArrayGetVal (arr, i)     -> ArrayGetVal (RefID.of_var arr, ValID.of_var i)
-    | Function.ArrayGetRef (arr, i)     -> ArrayGetRef (RefID.of_var arr, ValID.of_var i)
   in
   {id = free_expr_id (); expr = rt_expr}
 
@@ -390,12 +371,8 @@ let rec make_control_flow_graph
       } e1_e2_map
   | ApplyKnown (_, args) | ApplyUnknown (_, args) ->
       cfn_of_vars state expr args
-  | Var x | ArrayMake (_, x) ->
+  | Var x ->
       cfn_of_vars state expr [x]
-  | ArraySet (arr, _, x) ->
-      cfn_of_vars state expr ((Ref arr) :: [x])
-  | ArrayGetVal (r, _) | ArrayGetRef (r, _) | RefClone r | RefRelease r ->
-      cfn_of_vars state expr [Ref r]
 
 
 (* Compute the identifiers for CFG nodes which may immediately follow node [expr]. *)
@@ -430,9 +407,31 @@ end
 module LSolver = Liveness.Make(Cfg)
 
 
+(* Locate up a named external function in the list of known functions. *)
+let find_ext_function_def_by_name (program : program_t) (asm_name : string) : ValID.t =
+  let result =
+    VMap.fold
+      (fun id def result_opt ->
+        match def.f_impl with
+        | ExtFunc (name, _) when name = asm_name ->
+            Some id
+        | _ ->
+            result_opt)
+      program.functions
+      None
+  in
+  match result with
+  | None ->
+      let () = Printf.fprintf stderr "Missing asm function: %s\n" asm_name in
+      assert false
+  | Some x ->
+      x
+
+
 let rec insert_ref_release_aux
   ?(local_refs=RSet.empty)                (* Set of references which are live in this expr *)
   ?(curr_binding=None)                    (* Variable which is bound to the current expression, if any *)
+  (ref_release : ValID.t)                 (* Variable bound to external function zml_ref_release *)
   (liveness : LSolver.t LSolver.IdMap.t)  (* Reference variable liveness information *)
   (expr : t)                              (* Expression to be analyzed *)
     : t =
@@ -442,8 +441,7 @@ let rec insert_ref_release_aux
   let insert_release_let ref expr = {
     id = free_expr_id ();
     expr = Let (free_value_var (),
-      {id = free_expr_id (); expr = RefRelease ref},
-      expr)
+            {id = free_expr_id (); expr = ApplyKnown (ref_release, [Ref ref])}, expr)
   } in
   match expr.expr with
   | Conditional (cond, a, b, e1, e2) ->
@@ -457,7 +455,7 @@ let rec insert_ref_release_aux
         RSet.fold
           (fun dead_ref acc -> insert_release_let dead_ref acc)
           dead_refs
-          (insert_ref_release_aux ~local_refs ~curr_binding liveness branch_expr)
+          (insert_ref_release_aux ~local_refs ~curr_binding ref_release liveness branch_expr)
       in
       {expr with expr = Conditional (cond, a, b, branch_cleanup e1, branch_cleanup e2)}
   | Let (a, e1, e2) ->
@@ -469,15 +467,16 @@ let rec insert_ref_release_aux
         | Value v -> (local_refs, None)
         | Ref   r -> (RSet.add r local_refs, if RSet.mem r e2_live.LSolver.live_in then None else Some r)
       in
-      let e2_with_release = insert_ref_release_aux ~local_refs:e2_local_refs ~curr_binding liveness e2 in
+      let e2_with_release =
+        insert_ref_release_aux ~local_refs:e2_local_refs ~curr_binding ref_release liveness e2
+      in
       {expr with expr = Let (a,
-        insert_ref_release_aux ~local_refs ~curr_binding:(Some a) liveness e1,
+        insert_ref_release_aux ~local_refs ~curr_binding:(Some a) ref_release liveness e1,
         match unused_binding_opt with
         | None   -> e2_with_release
         | Some r -> insert_release_let r e2_with_release)}
   | Unit | Int _ | Var _ | KnownFuncVar _
-  | ApplyKnown _ | ApplyUnknown _ | ArrayMake _
-  | ArraySet _ | ArrayGetVal _ | ArrayGetRef _ | RefClone _ | RefRelease _ ->
+  | ApplyKnown _ | ApplyUnknown _ ->
       begin match curr_binding with
       | Some binding ->
         let expr_live = LSolver.IdMap.find expr liveness in
@@ -504,11 +503,11 @@ let rec insert_ref_release_aux
       end
 
 
-(* Insert RefRelease operations for expression [expr], using the [liveness] map.
+(* Insert zml_ref_release operations for expression [expr], using the [liveness] map.
  * References are released under the following conditions:
  *    1) the reference is created within the body of [expr]
  *    2) the reference is an intermediate value, not the final value of the [expr] *)
-let insert_ref_release (expr : t) : t =
+let insert_ref_release (program : program_t) (expr : t) : t =
   let cfg_init_state = {
     map        = TMap.empty;
     binding    = None;
@@ -516,7 +515,8 @@ let insert_ref_release (expr : t) : t =
   } in
   let cfg = make_control_flow_graph cfg_init_state expr in
   let liveness = LSolver.solve cfg in
-  insert_ref_release_aux liveness expr
+  let ref_release = find_ext_function_def_by_name program Builtins.ref_release in
+  insert_ref_release_aux ref_release liveness expr
 
 
 (* Rewrite the [program] inserting code for automatic management of reference lifetimes. *)
@@ -527,7 +527,7 @@ let insert_ref_management (program : Function.program_t) : program_t =
       let impl =
         match f.f_impl with
         | NativeFunc (args, expr) ->
-            NativeFunc (args, insert_ref_release expr)
+            NativeFunc (args, insert_ref_release clone_annot_prog expr)
         | ExtFunc _ ->
             f.f_impl
       in

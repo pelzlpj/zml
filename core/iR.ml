@@ -54,12 +54,6 @@ type t =
   | Let of sp_var_t * t * t                     (* Let binding for a variable *)
   | ApplyKnown of ValID.t * (sp_var_t list)     (* Application of "known" function *)
   | ApplyUnknown of ValID.t * (sp_var_t list)   (* Application of an "unknown" function (computed address) *)
-  | ArrayMake of ValID.t * sp_var_t             (* Construct a new array (length, value) *)
-  | ArraySet of RefID.t * ValID.t * sp_var_t    (* Store a ref or value in an array (arr, index, ref) *)
-  | ArrayGetVal of RefID.t * ValID.t            (* Get a value from an array (arr, index) *)
-  | ArrayGetRef of RefID.t * ValID.t            (* Get a reference from an array (arr, index) *)
-  | RefClone of RefID.t                         (* Create new references which points to same object *)
-  | RefRelease of RefID.t                       (* Release a reference *)
 
 
 
@@ -125,12 +119,6 @@ let rec rewrite (functions : RefTracking.function_t VMap.t) (id_expr : RefTracki
   | RT.Let (a, e1, e2)                  -> Let (a, recur e1, recur e2)
   | RT.ApplyKnown (f, args)             -> rewrite_apply_known functions f args
   | RT.ApplyUnknown (f, args)           -> ApplyUnknown (f, args)
-  | RT.ArrayMake (len, v)               -> ArrayMake (len, v)
-  | RT.ArraySet (arr, index, v)         -> ArraySet (arr, index, v)
-  | RT.ArrayGetVal (arr, index)         -> ArrayGetVal (arr, index)
-  | RT.ArrayGetRef (arr, index)         -> ArrayGetRef (arr, index)
-  | RT.RefClone r                       -> RefClone r
-  | RT.RefRelease r                     -> RefRelease r
 
 
 (* Strip expression identifiers from the whole-program RefTracking output. *)

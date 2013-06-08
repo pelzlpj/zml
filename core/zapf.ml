@@ -95,7 +95,7 @@ let string_of_function
   let f_def = VMap.find f_id program.IR.functions in
   match f_def.IR.f_impl with
   | IR.NativeFunc (f_args, f_body) ->
-      let asm = compile f_args f_body in
+      let asm = compile program f_args f_body in
       let local_var_names = (List.map (sprintf "r%d") (list_range local_variable_count)) in
       let local_vars_str = String.concat ", " local_var_names in
       let funct_header = sprintf ".FUNCT %s, %s\n"

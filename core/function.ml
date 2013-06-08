@@ -71,10 +71,6 @@ type t =
   | ApplyKnown of var_t * (var_t list)              (* Application of "known" function *)
   | ApplyUnknown of var_t * (var_t list)            (* Application of an "unknown" function
                                                           (i.e. call to computed address) *)
-  | ArrayMake of var_t * var_t                      (* Construct a new array (length, value) *)
-  | ArraySet of var_t * var_t * var_t               (* Store a ref or value in an array (arr, index, val) *)
-  | ArrayGetVal of var_t * var_t                    (* Get a value from an array (arr, index) *)
-  | ArrayGetRef of var_t * var_t                    (* Get a reference from an array (arr, index) *)
 
 
 type function_def_t =
@@ -169,14 +165,6 @@ let rec string_of_expr ?(indent_level=0) ?(chars_per_indent=2) (expr : t) : stri
       sprintf "apply(%s %s)" (SPVar.to_string f) (String.concat " " (List.map SPVar.to_string args))
   | ApplyUnknown (f, args) ->
       sprintf "apply_unk(%s %s)" (SPVar.to_string f) (String.concat " " (List.map SPVar.to_string args))
-  | ArrayMake (a, b) ->
-      sprintf "array_make(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
-  | ArraySet (a, b, c) ->
-      sprintf "array_set(%s, %s, %s)" (SPVar.to_string a) (SPVar.to_string b) (SPVar.to_string c)
-  | ArrayGetVal (a, b) ->
-      sprintf "array_get_val(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
-  | ArrayGetRef (a, b) ->
-      sprintf "array_get_ref(%s, %s)" (SPVar.to_string a) (SPVar.to_string b)
 
 
 
@@ -346,12 +334,18 @@ let make_closure_fun_body
       (fun free_var (ofs, exp) ->
         let array_get_expr =
           let ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+          let array_get_val = find_ext_function_def_by_name Builtins.array_get_val in
+          let array_get_ref = find_ext_function_def_by_name Builtins.array_get_ref in
           Let (ofs_id, Int ofs,
             match storage_of_type free_var.VarID.tp with
             | Value ->
-                Let (value_var free_var, ArrayGetVal (closure_id, ofs_id), exp)
+                Let (value_var free_var,
+                  ApplyKnown (array_get_val, [closure_id; ofs_id]),
+                  exp)
             | Ref ->
-                Let (ref_var free_var, ArrayGetRef (closure_id, ofs_id), exp))
+                Let (ref_var free_var,
+                  ApplyKnown (array_get_ref, [closure_id; ofs_id]),
+                  exp))
         in
         (ofs + 1, array_get_expr))
       free_vars
@@ -364,8 +358,10 @@ let make_closure_fun_body
 let make_closure_application closure_id args =
   let closure_ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
   let func_id        = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
+  let array_get_val  = find_ext_function_def_by_name Builtins.array_get_val in
   Let (closure_ofs_id, Int 0,
-    Let (func_id, ArrayGetVal (closure_id, closure_ofs_id),
+    Let (func_id,
+      ApplyKnown (array_get_val, [closure_id; closure_ofs_id]),
       ApplyUnknown (func_id, closure_id :: args)))
 
 
