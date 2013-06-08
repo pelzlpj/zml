@@ -284,7 +284,9 @@ let make_closure_def
   (extract_fun : Normal.t -> t)       (* Method for extracting functions from a subexpression *)
     : t =
   (* Prefix the expression with all the array_init operations necessary to init the closure *)
-  let array_init_one = find_ext_function_def_by_name Builtins.array_init_one in
+  let array_init_one =
+    find_ext_function_def_by_name (Builtins.asm_name_of_id Builtins.array_init_one)
+  in
   let (_, expr_with_array_init) = VSet.fold
     (fun free_var (ofs, exp) ->
       let array_set_expr =
@@ -308,7 +310,9 @@ let make_closure_def
   let known_func_ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
   let known_func_id     = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
   let ref_flag_id       = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-  let array_alloc       = find_ext_function_def_by_name Builtins.array_alloc in
+  let array_alloc =
+    find_ext_function_def_by_name (Builtins.asm_name_of_id Builtins.array_alloc)
+  in
   Let (known_func_id, KnownFuncVar (value_var f_id),
     Let (closure_size_id, Int (1 + (VSet.cardinal free_vars)),
       Let (closure_id, ApplyKnown (array_alloc, [closure_size_id]),
@@ -334,8 +338,12 @@ let make_closure_fun_body
       (fun free_var (ofs, exp) ->
         let array_get_expr =
           let ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-          let array_get_val = find_ext_function_def_by_name Builtins.array_get_val in
-          let array_get_ref = find_ext_function_def_by_name Builtins.array_get_ref in
+          let array_get_val =
+            find_ext_function_def_by_name (Builtins.asm_name_of_id Builtins.array_get_val)
+          in
+          let array_get_ref =
+            find_ext_function_def_by_name (Builtins.asm_name_of_id Builtins.array_get_ref)
+          in
           Let (ofs_id, Int ofs,
             match storage_of_type free_var.VarID.tp with
             | Value ->
@@ -358,7 +366,9 @@ let make_closure_fun_body
 let make_closure_application closure_id args =
   let closure_ofs_id = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
   let func_id        = {SPVar.id = Normal.free_var (); SPVar.storage = Value} in
-  let array_get_val  = find_ext_function_def_by_name Builtins.array_get_val in
+  let array_get_val  =
+    find_ext_function_def_by_name (Builtins.asm_name_of_id Builtins.array_get_val)
+  in
   Let (closure_ofs_id, Int 0,
     Let (func_id,
       ApplyKnown (array_get_val, [closure_id; closure_ofs_id]),
@@ -442,11 +452,16 @@ let rewrite_type_differentiated_builtins
     : t =
   let orig_def_opt = find_function_def_by_id sp_f_id in
   match orig_def_opt with
-  | Some {f_impl = ExtFunc (asm_name, _); _} when asm_name = Builtins.array_get ->
+  | Some {f_impl = ExtFunc (asm_name, _); _}
+        when asm_name = (Builtins.asm_name_of_id Builtins.array_get) ->
       (* FIXME: Each of these lookups is O(number of functions in program).  They should be collected
        * once and cached. *)
-      let array_get_val = find_ext_function_def_by_name Builtins.array_get_val in
-      let array_get_ref = find_ext_function_def_by_name Builtins.array_get_ref in
+      let array_get_val =
+        find_ext_function_def_by_name (Builtins.asm_name_of_id Builtins.array_get_val)
+      in
+      let array_get_ref =
+        find_ext_function_def_by_name (Builtins.asm_name_of_id Builtins.array_get_ref)
+      in
       begin match f_args with
       | {VarID.tp = Type.Array contained_type; _} :: _ ->
           begin match storage_of_type contained_type with

@@ -146,3 +146,39 @@ let type_env =
 
   ]
 
+
+let asm_table =
+	let asm_id_assoc = [
+		(leq            , "zml_op_int_leq");
+		(geq            , "zml_op_int_geq");
+		(less           , "zml_op_int_less");
+		(greater        , "zml_op_int_greater");
+		(add            , "zml_op_int_add");
+		(sub            , "zml_op_int_sub");
+		(mul            , "zml_op_int_mul");
+		(div            , "zml_op_int_div");
+		(modulus        , "zml_op_int_mod)");
+		(logic_not      , "zml_op_int_not");
+		(neg            , "zml_op_int_neg");
+		(array_get_val  , "zml_array_get_value");
+		(array_get_ref  , "zml_array_get_ref");
+		(array_set_val  , "zml_array_set_value");
+		(array_set_ref  , "zml_array_set_ref");
+		(array_alloc    , "zml_array_alloc");
+		(array_init_one , "zml_array_init_one");
+		(array_make     , "zml_array_create");
+		(ref_clone      , "zml_ref_clone");
+		(ref_release    , "zml_ref_release")
+	] in
+	let table = Hashtbl.create 50 in
+	let () = List.iter (fun (id, asm_name) -> Hashtbl.add table id asm_name) asm_id_assoc in
+	table
+
+
+let asm_name_of_id (id : string) : string =
+	try
+		Hashtbl.find asm_table id
+	with Not_found ->
+		(* Make it obvious that this symbol should never appear in the asm *)
+		id ^ "__UNDEFINED"
+

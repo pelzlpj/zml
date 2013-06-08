@@ -209,7 +209,7 @@ type compile_state_t = {
  * as necessary to satisfy requirements of the runtime API. *)
 let compile_virtual_apply_known program state result_reg g g_args =
   match (VMap.find g program.IR.functions).IR.f_impl, g_args with
-  | IR.ExtFunc (asm_name, _), [len; init_val] when asm_name = Builtins.array_make ->
+  | IR.ExtFunc (f_id, _), [len; init_val] when f_id = Builtins.array_make ->
       (* zml_array_make requires the caller to pass a boolean that indicates
        * whether the array contains value or reference types. *)
       let is_ref =
@@ -217,18 +217,18 @@ let compile_virtual_apply_known program state result_reg g g_args =
         | RefTracking.Value _ -> 0
         | RefTracking.Ref _   -> 1
       in
-      (state, [CALL_VS2 (Const (AsmRoutine Builtins.array_make), [
+      (state, [CALL_VS2 (Const (AsmRoutine (Builtins.asm_name_of_id Builtins.array_make)), [
         Reg (RVMap.find len state.reg_of_var);
         Reg (RVMap.find init_val state.reg_of_var);
         Const (ConstNum is_ref)],
       result_reg)])
-  | IR.ExtFunc (asm_name, _), [arr; index; v] when asm_name = Builtins.array_set ->
+  | IR.ExtFunc (f_id, _), [arr; index; v] when f_id = Builtins.array_set ->
       (* zml_array_set branches to either zml_array_set_value or zml_array_set_ref,
        * depending on whether the set value is a value or reference type. *)
       let routine =
         match v with
-        | RefTracking.Value _ -> Builtins.array_set_val
-        | RefTracking.Ref _   -> Builtins.array_set_ref
+        | RefTracking.Value _ -> (Builtins.asm_name_of_id Builtins.array_set_val)
+        | RefTracking.Ref _   -> (Builtins.asm_name_of_id Builtins.array_set_ref)
       in
       (state, [CALL_VS2 (Const (AsmRoutine routine), [
         Reg (RVMap.find arr state.reg_of_var);
@@ -760,7 +760,7 @@ let inject_load ~spilled_reg_offsets ~reg_alloc_state ~reg ~root_ref =
   if VRegMap.mem reg spilled_reg_offsets then
     let (reg_alloc_state, new_reg) = VRegState.next reg_alloc_state in
     let load_asm = [
-      CALL_VS2 (Const (AsmRoutine Builtins.array_get_val),
+      CALL_VS2 (Const (AsmRoutine (Builtins.asm_name_of_id Builtins.array_get_val)),
         [Reg root_ref; Const (ConstNum (VRegMap.find reg spilled_reg_offsets))], new_reg)
     ] in
     (reg_alloc_state, Reg new_reg, load_asm)
@@ -774,7 +774,7 @@ let inject_store ~spilled_reg_offsets ~reg_alloc_state ~reg ~root_ref =
      * precedes this injected assembly *)
     let (reg_alloc_state, written_reg) = VRegState.next reg_alloc_state in
     let store_asm = [
-      CALL_VS2 (Const (AsmRoutine Builtins.array_set_val),
+      CALL_VS2 (Const (AsmRoutine (Builtins.asm_name_of_id Builtins.array_set_val)),
         [Reg root_ref; Const (ConstNum (VRegMap.find reg spilled_reg_offsets));
           Reg written_reg], written_reg)
     ] in
@@ -854,7 +854,7 @@ let spill_to_heap
     (0, VRegMap.empty)
   in
   let header = [
-    CALL_VS2 (Const (AsmRoutine Builtins.array_alloc),
+    CALL_VS2 (Const (AsmRoutine (Builtins.asm_name_of_id Builtins.array_alloc)),
       [Const (ConstNum (VRegSet.cardinal spill_regs))], root_ref)
   ] in
   (* Insert loads and stores whenever the spilled registers are accessed. *)
@@ -931,7 +931,8 @@ let spill_to_heap
           | Const _ ->
               (reg_alloc_state,
                 RET op ::
-                CALL_VS2 (Const (AsmRoutine Builtins.ref_release), [Reg root_ref], root_ref) ::
+                CALL_VS2 (Const (AsmRoutine (Builtins.asm_name_of_id Builtins.ref_release)),
+                  [Reg root_ref], root_ref) ::
                 asm_acc)
           | Reg r ->
               let (reg_alloc_state, op, load_asm) =
@@ -939,7 +940,8 @@ let spill_to_heap
               in
               (reg_alloc_state,
                 RET op ::
-                CALL_VS2 (Const (AsmRoutine Builtins.ref_release), [Reg root_ref], root_ref) ::
+                CALL_VS2 (Const (AsmRoutine (Builtins.asm_name_of_id Builtins.ref_release)),
+                  [Reg root_ref], root_ref) ::
                 (List.rev_append load_asm asm_acc))
           end
       | (JUMP label as inst) | (Label label as inst) ->

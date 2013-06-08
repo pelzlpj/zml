@@ -451,8 +451,11 @@ let infer (parsed_expr : Syntax.t) : aexpr_t =
     Syntax.type_annot = None
   } in
   List.fold_left 
-    (fun ast (asm_name, ts) -> {
-      expr = External ({bind_name = asm_name; bind_type = instantiate ts}, asm_name, ast);
+    (fun ast (asm_id, ts) -> {
+      expr = External (
+        {bind_name = asm_id; bind_type = instantiate ts},
+        Builtins.asm_name_of_id asm_id,
+        ast);
       inferred_type = ast.inferred_type;
       parser_info = bogus_parser_info
     })

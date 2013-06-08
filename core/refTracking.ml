@@ -243,7 +243,9 @@ let rec identify_ref_clones ?(is_binding_expr=false) (expr : Function.t) : t =
           | Function.Value ->
               Var (infer_sp_var a)
           | Function.Ref   -> 
-              let ref_clone = Function.find_ext_function_def_by_name Builtins.ref_clone in
+              let ref_clone = Function.find_ext_function_def_by_name
+                (Builtins.asm_name_of_id Builtins.ref_clone)
+              in
               ApplyKnown (ValID.of_var ref_clone, [Ref (RefID.of_var a)])
           end
         else
@@ -515,7 +517,9 @@ let insert_ref_release (program : program_t) (expr : t) : t =
   } in
   let cfg = make_control_flow_graph cfg_init_state expr in
   let liveness = LSolver.solve cfg in
-  let ref_release = find_ext_function_def_by_name program Builtins.ref_release in
+  let ref_release = find_ext_function_def_by_name program
+    (Builtins.asm_name_of_id Builtins.ref_release)
+  in
   insert_ref_release_aux ref_release liveness expr
 
 

@@ -83,22 +83,22 @@ let rewrite_apply_known function_map f (args : sp_var_t list) =
   let module RT = RefTracking in
   match (VMap.find f function_map, args) with
   | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
-      [RT.Value a; RT.Value b]) when asm_name = Builtins.add ->
+      [RT.Value a; RT.Value b]) when asm_name = Builtins.asm_name_of_id Builtins.add ->
       BinaryOp (Add, a, b)
   | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
-      [RT.Value a; RT.Value b]) when asm_name = Builtins.sub ->
+      [RT.Value a; RT.Value b]) when asm_name = Builtins.asm_name_of_id Builtins.sub ->
       BinaryOp (Sub, a, b)
   | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
-      [RT.Value a; RT.Value b]) when asm_name = Builtins.mul ->
+      [RT.Value a; RT.Value b]) when asm_name = Builtins.asm_name_of_id Builtins.mul ->
       BinaryOp (Mul, a, b)
   | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
-      [RT.Value a; RT.Value b]) when asm_name = Builtins.div ->
+      [RT.Value a; RT.Value b]) when asm_name = Builtins.asm_name_of_id Builtins.div ->
       BinaryOp (Div, a, b)
   | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
-      [RT.Value a; RT.Value b]) when asm_name = Builtins.modulus ->
+      [RT.Value a; RT.Value b]) when asm_name = Builtins.asm_name_of_id Builtins.modulus ->
       BinaryOp (Mod, a, b)
   | ({ RT.f_impl = RT.ExtFunc (asm_name, _); _ },
-      [RT.Value a]) when asm_name = Builtins.neg ->
+      [RT.Value a]) when asm_name = Builtins.asm_name_of_id Builtins.neg ->
       UnaryOp (Neg, a)
   | _ ->
       ApplyKnown (f, args)
