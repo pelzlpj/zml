@@ -262,7 +262,7 @@ and normalize_lambda
  * only when the chain of Apply() operations is broken. *)
 and normalize_apply
   (renames : rename_context_t)      (* Variable renaming context for the current expression *)
-  (arg_acc : var_t list)            (* Accumulator for applied arguments (reversed) *)
+  (arg_acc : var_t list)            (* Accumulator for applied arguments *)
   (func    : Typing.aexpr_t)        (* Function being applied *)
   (arg     : Typing.aexpr_t)        (* Argument to which the function is applied *)
     : t =
@@ -273,7 +273,7 @@ and normalize_apply
   | _ ->
       insert_binary_let renames func arg
         (fun bound_func bound_arg ->
-          Apply (bound_func, List.rev (bound_arg :: arg_acc)))
+          Apply (bound_func, bound_arg :: arg_acc))
 
 
 (* Normalize an if/then/else conditional.
