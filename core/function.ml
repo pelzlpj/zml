@@ -34,6 +34,13 @@
  *
  *    * The variable types are annotated with storage policy information, so that
  *      a later pass can insert lifetime management code for reference types.
+ *
+ * TODO: current code uses known-function optimization only when a function is
+ * *never* occurs in a first-class usage.  That's pessimistic... we could compile
+ * a function using both known-address and computed-address forms, and choose the
+ * appropriate implementation based on context.  This could make a significant
+ * difference in performance, because the closure calling convention is gonna
+ * be pretty expensive.
  *)
 
 open Printf
@@ -445,7 +452,7 @@ let rec is_first_class f_id (expr : Normal.t) : bool =
 (* array_get operations take two different code paths: one for retrieving an element from
  * a reference array and one for retrieving an element from a value array.  Types are erased
  * in Function.t, so this is the last opportunity to differentiate based on type. *)
-let rewrite_type_differentiated_builtins
+let make_known_function_application
   (sp_f_id   : SPVar.t)
   (f_args    : VarID.t list)
   (sp_f_args : SPVar.t list)
@@ -497,8 +504,8 @@ let rec extract_functions_aux
             KnownFuncVar (value_var a)
         | Closure r ->
             Var r
-        with Not_found ->
-          Var (infer_storage a)
+      with Not_found ->
+        Var (infer_storage a)
       end
   | Normal.Conditional (cond, a, b, e1, e2) ->
       Conditional (cond, infer_storage a, infer_storage b, extract_functions_aux callable_ids e1,
@@ -539,13 +546,36 @@ let rec extract_functions_aux
         let () = add_function_def (value_var f_id) {f_name; f_impl = ExtFunc (f_ext_impl, f_arg_count)} in
         extract_functions_aux callable_ids f_scope_expr
       else
-        (* Closure conversion.  This is an externally-defined function which gets stored at least
-         * once as a function pointer.  Consequently we need to box it in a closure array, so that
-         * the function pointer may be safely invoked by ApplyUnknown. *)
-        let closure_id = {SPVar.id = Normal.free_var (); SPVar.storage = Ref} in
-        let callable_ids = VMap.add f_id (Closure closure_id) callable_ids in
-        let () = add_function_def (value_var f_id) {f_name; f_impl = ExtFunc (f_ext_impl, f_arg_count)} in
-        make_closure_def f_id closure_id VSet.empty f_scope_expr (extract_functions_aux callable_ids)
+        (* Closure conversion.  The way we handle this is to rewrite the the code using a
+         * native function that wraps a known-function call to the external function:
+         *
+         *  external f : x -> y -> z = "asm_f" in
+         *  ...
+         *
+         *      rewritten to
+         *
+         *  external f' : x -> y -> z = "asm_f" in
+         *  let f x y z = f' x y z in
+         *  ...
+         *
+         * The LetFun path has all the necessary logic for closure conversion. *)
+        let f_id' = {f_id with VarID.id = Normal.free_var ()} in
+        let rec build_args args_rev tp =
+          match tp with
+          | Type.Arrow (arg_tp, next_tp) ->
+              let arg_var = {VarID.id = Normal.free_var (); VarID.tp = arg_tp} in
+              build_args (arg_var :: args_rev) next_tp
+          | _ ->
+              List.rev args_rev
+        in
+        let wrapper_args = build_args [] f_id.VarID.tp in
+        let rewritten_ast =
+          Normal.External (f_name, f_id', f_ext_impl, f_arg_count,
+            Normal.LetFun (f_name ^ "_wrapper", f_id, wrapper_args,
+              Normal.Apply (f_id', wrapper_args),
+              f_scope_expr))
+        in
+        extract_functions_aux callable_ids rewritten_ast
   | Normal.Apply (f_id, f_args) ->
       let exp_arg_count = Normal.count_arrow_type_args f_id.VarID.tp in
       let act_arg_count = List.length f_args in
@@ -559,7 +589,7 @@ let rec extract_functions_aux
         begin try
           match VMap.find f_id callable_ids with
           | Known ->
-              rewrite_type_differentiated_builtins (value_var f_id) f_args sp_f_args
+              make_known_function_application (value_var f_id) f_args sp_f_args
           | Closure closure_id ->
               make_closure_application closure_id sp_f_args
         with Not_found ->
