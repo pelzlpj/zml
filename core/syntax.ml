@@ -1,37 +1,28 @@
 
 open Printf
-
-type file_range_t = {
-(** [file_range_t] is a representation of a range of characters in a source file. *)
-  fr_start : Lexing.position;   (** Starting position of a range of characters *)
-  fr_end   : Lexing.position;   (** Ending position of a range of characters *)
-}
-
-type parser_meta_t = {
-  range      : file_range_t;                (** Location in file where expression is found *)
-  type_annot : Type.type_scheme_t option;   (** Type annotation for this expression, if provided *)
-}
+open ParserMeta
 
 
-type t = {
-(** Type [t] represents a node in the AST, as determined by the first pass of parsing the source file. *)
-  expr        : expr_t;         (** Expression parsed at this node *)
-  parser_info : parser_meta_t   (** Additional metadata recorded by the parser *)
-}
+module UntypedNode = struct
+  type 'a t = {
+  (** Type [t] represents a node in the AST, as determined by the first pass of parsing the source file. *)
+    expr        : 'a;             (** Expression parsed at this node *)
+    parser_info : parser_meta_t   (** Additional metadata recorded by the parser *)
+  }
 
-and expr_t =
-(** [expr_t] defines all the expressions which are supported at the syntax level. *)
-  | Unit
-  | Bool of bool
-  | Int of int
-  | If of t * t * t
-  | Var of string
-  | Let of string * t * t                       (* newly bound variable does not recur in the body *)
-  | LetRec of string * t * t                    (* newly bound variable may recur in the body *)
-  | Lambda of string * t                        (* unary lambda definition *)
-  | External of string * Type.type_scheme_t *
-                string * t                      (* external (assembly passthrough) function declaration *)
-  | Apply of t * t                              (* application of a function to a single argument *)
+  type bind_t = string
+
+  let get_expr x = x.expr
+  let get_parser_info x = x.parser_info
+  let get_type_constraint x = x.parser_info.type_annot
+  let get_name binding = binding
+  let make ~expr ~parser_info = { expr; parser_info }
+end
+
+module UntypedLambda = AlgW.Lambda(UntypedNode)
+open UntypedLambda
+open UntypedNode
+type t = UntypedLambda.t UntypedNode.t
 
 
 (* Construct an AST node with no type information *)
@@ -46,6 +37,12 @@ let typed_expr expr type_annot range = {
   parser_info = {range; type_annot = Some type_annot}
 }
 
+(* In a couple of places we need to make up a parser_meta_t which doesn't actually get
+ * used anywhere. *)
+let bogus_parser_meta_t = {
+  range = {fr_start = Lexing.dummy_pos; fr_end = Lexing.dummy_pos};
+  type_annot = None
+}
 
 let rec print_ast (ast : t) =
   let expr_s =
@@ -72,7 +69,7 @@ let rec print_ast (ast : t) =
         (print_ast c)
     | Lambda (a, b) ->
       sprintf "Lambda (%s, %s)" a (print_ast b)
-    | External (a, a_typ, b, c) ->
+    | External (a, b, c) ->
       sprintf "External (%s, %s, %s)" a b (print_ast c)
     | Apply (f, arg) ->
       sprintf "Apply (%s %s)" (print_ast f) (print_ast arg)

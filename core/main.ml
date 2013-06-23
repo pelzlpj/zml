@@ -45,25 +45,27 @@ let parse filename =
     (* let s = Function.to_string func_normal in *)
     (*let () = print_endline s in
     () *)
-  with Typing.Unification_failure constr ->
-    let error_range = constr.Typing.error_info.Syntax.range in
+  with AlgW.Unification_failure constr ->
+    let error_range = constr.AlgW.error_info.ParserMeta.range in
     let () = Printf.printf "Typing error in range %d:%d-%d:%d\n"
-      error_range.Syntax.fr_start.Lexing.pos_lnum
-      (error_range.Syntax.fr_start.Lexing.pos_cnum -
-        error_range.Syntax.fr_start.Lexing.pos_bol + 1)
-      error_range.Syntax.fr_end.Lexing.pos_lnum
-      (error_range.Syntax.fr_end.Lexing.pos_cnum -
-        error_range.Syntax.fr_end.Lexing.pos_bol + 1)
+      error_range.ParserMeta.fr_start.Lexing.pos_lnum
+      (error_range.ParserMeta.fr_start.Lexing.pos_cnum -
+        error_range.ParserMeta.fr_start.Lexing.pos_bol + 1)
+      error_range.ParserMeta.fr_end.Lexing.pos_lnum
+      (error_range.ParserMeta.fr_end.Lexing.pos_cnum -
+        error_range.ParserMeta.fr_end.Lexing.pos_bol + 1)
     in
     let (ctx, left_type) =
-      Type.local_rename_typevars Type.empty_rename_ctx constr.Typing.left_type
+      Type.local_rename_typevars Type.empty_rename_ctx constr.AlgW.left_type
     in
     let (ctx, right_type) =
-      Type.local_rename_typevars ctx constr.Typing.right_type
+      Type.local_rename_typevars ctx constr.AlgW.right_type
     in
     let () = Printf.printf "This expression has type\n    %s\n" (Type.string_of_type left_type) in
     Printf.printf "An expression was expected of type\n    %s\n" (Type.string_of_type right_type)
 
 
-let _ = parse Sys.argv.(1)
+let _ =
+  let () = Printexc.record_backtrace true in
+  parse Sys.argv.(1)
 

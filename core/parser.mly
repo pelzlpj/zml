@@ -20,7 +20,10 @@
  *  <pelzlpj@gmail.com>.
  ******************************************************************************)
 
+open Syntax.UntypedLambda
+open Syntax.UntypedNode
 open Syntax
+open ParserMeta
 
 (* Gets the file range corresponding to the current parser "symbol". *)
 let symbol_range () = {
@@ -166,7 +169,7 @@ expr:
       in
       untyped_expr_sym (LetRec ($3, lambda_chain, $8)) }
   | EXTERNAL IDENT COLON type_expr EQ STRING_LITERAL IN seq_expr
-    { typed_expr_sym (External ($2, $4, $6, $8)) $4 }
+    { typed_expr_sym (External ($2, $6, $8)) $4 }
   | IF expr THEN expr ELSE expr
     { untyped_expr_sym (If ($2, $4, $6)) }
   | NOT expr
