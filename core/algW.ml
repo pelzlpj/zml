@@ -410,8 +410,16 @@ module Make (UntypedNode : AST_NODE_UNTYPED) (TypedNode : AST_NODE_TYPED) = stru
             assert false
         end
     | ULambda.Lambda (x, body) ->
-        let x_tv     = TypeVar.fresh () in
-        let x_tp     = Type.Var x_tv in
+        let x_tp =
+          (* A user-defined type annotation will get added to the environment of the body.
+           * This can have the effect of constraining a function so that it is non-polymorphic
+           * (i.e. "let id (x : int) = x" should type to "val id : int -> int"). *)
+          match parser_info.ParserMeta.type_annot with
+          | Some ts ->
+              instantiate ts
+          | None ->
+              Type.Var (TypeVar.fresh ())
+        in
         let x_str    = UntypedNode.get_name x in
         let body_env = PVMap.add (ProgVar.of_string x_str) (Type.ForAll (TVSet.empty, x_tp)) env in
         let body_subst, body_typed_expr = algorithm_w body_env body in
@@ -423,6 +431,28 @@ module Make (UntypedNode : AST_NODE_UNTYPED) (TypedNode : AST_NODE_TYPED) = stru
             ~parser_info)
     | ULambda.Let (x, body, scope) ->
         let body_subst, body_typed_expr = algorithm_w env body in
+        (* If a user-specified type annotation was attached to the let-binding, we unify against
+         * this additional constraint before descending into the scope of the let.  If the body
+         * of the let is polymorphic, this additional type constraint could make the binding
+         * less polymorphic. *)
+        let body_subst, body_typed_expr =
+          match parser_info.ParserMeta.type_annot with
+          | Some constr_ts ->
+              let annot_constraint = {
+                left_type  = instantiate constr_ts;
+                right_type = TypedNode.get_type body_typed_expr;
+                error_info = parser_info
+              } in
+              let constr_subst = unify annot_constraint in
+              let constrained_body_typed_expr = TypedNode.make
+                ~expr:(TypedNode.get_expr body_typed_expr)
+                ~parser_info:(TypedNode.get_parser_info body_typed_expr)
+                ~inferred_type:(apply_subst_type constr_subst (TypedNode.get_type body_typed_expr))
+              in
+              (compose_subst constr_subst body_subst, constrained_body_typed_expr)
+          | None ->
+              body_subst, body_typed_expr
+        in
         let x_generalized_type =
           generalize (apply_subst_env body_subst env) (TypedNode.get_type body_typed_expr)
         in
